@@ -1314,6 +1314,65 @@ void install() {
 }
 
 // ---------------------------------------------------------------------------
+// The mod's own menu, for players without the Sims 4 VR mod (user 2026-10-17 16:09Z): the script opens it
+// with game dialogs when menu_key goes down in the game's window.
+
+const wchar_t kMenu[] =
+#include "menu.inc"
+    ;
+
+bool vrLoaded() { return GetModuleHandleW(L"sims4vr.dll") != nullptr; }
+
+std::atomic<bool> g_keyHit{false};
+std::atomic<int> g_capture{-1};  // -1 = not capturing; 0 = waiting for a key; else the key pressed
+std::atomic<bool> g_keyThread{false};
+
+bool gameInFront() {
+    DWORD pid = 0;
+    HWND w = GetForegroundWindow();
+    return w && GetWindowThreadProcessId(w, &pid) && pid == GetCurrentProcessId();
+}
+bool down(int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; }
+
+// Watches the keyboard every 10 ms (a tap is shorter than the script's 0.1 s alarm).
+void startKeyThread() {
+    if (g_keyThread.exchange(true)) return;
+    CreateThread(nullptr, 0, [](LPVOID) -> DWORD {
+        bool was = true;  // a key held when the thread starts doesn't count
+        bool held[256] = {};
+        for (;;) {
+            Sleep(10);
+            bool front = gameInFront();
+            if (g_capture.load() == 0) {
+                for (int vk = 8; vk < 255; ++vk) {
+                    bool d = front && down(vk);
+                    bool skip = vk <= 6 || vk == VK_RETURN || vk == VK_ESCAPE || (vk >= VK_SHIFT && vk <= VK_MENU) ||
+                                (vk >= VK_LSHIFT && vk <= VK_RMENU) || vk == VK_LWIN || vk == VK_RWIN;
+                    if (d && !held[vk] && !skip) {
+                        int none = 0;
+                        g_capture.compare_exchange_strong(none, vk);
+                    }
+                    held[vk] = d;
+                }
+                was = true;
+                continue;
+            }
+            int vk = static_cast<int>(val(kMenuKey));
+            bool d = front && vk > 0 && vk < 255 && down(vk) && !down(VK_CONTROL) && !down(VK_MENU);
+            if (d && !was) g_keyHit = true;
+            was = d;
+        }
+    }, nullptr, 0, nullptr);
+}
+
+std::string utf8(const wchar_t* w) {
+    int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
+    std::string out(n > 0 ? n - 1 : 0, '\0');
+    if (n > 1) WideCharToMultiByte(CP_UTF8, 0, w, -1, &out[0], n, nullptr, nullptr);
+    return out;
+}
+
+// ---------------------------------------------------------------------------
 // Python (3.7, the game's), minimal ABI subset.
 
 struct PyObject {
@@ -1467,6 +1526,48 @@ PyObject* logText(PyObject*, PyObject* args) {
     return none();
 }
 
+// menu() -> the menu rows (docs/MENU-EXPORT.md) as text.
+PyObject* menuText(PyObject*, PyObject*) {
+    static const std::string text = utf8(kMenu);
+    return py.Py_BuildValue("s", text.c_str());
+}
+
+// menu_key() -> 1 once each time the menu key went down in the game's window (never with the VR mod, whose
+// debug menu has these pages), else 0.
+PyObject* menuKey(PyObject*, PyObject*) {
+    startKeyThread();
+    bool hit = g_keyHit.exchange(false);
+    return py.PyLong_FromLong(hit && !vrLoaded() ? 1 : 0);
+}
+
+// vr() -> 1 when the Sims 4 VR mod is loaded.
+PyObject* vr(PyObject*, PyObject*) { return py.PyLong_FromLong(vrLoaded() ? 1 : 0); }
+
+// capture(start) -> start 1: wait for the next key; 0: the key pressed since (0 = none yet), and stop.
+PyObject* capture(PyObject*, PyObject* args) {
+    int start = 0;
+    if (!py.PyArg_ParseTuple(args, "i", &start)) return nullptr;
+    startKeyThread();
+    if (start) {
+        g_capture = 0;
+        return py.PyLong_FromLong(0);
+    }
+    int vk = g_capture.exchange(-1);
+    return py.PyLong_FromLong(vk > 0 ? vk : 0);
+}
+
+// key_name(code) -> the key's name on this keyboard ("." , "F5"...).
+PyObject* keyName(PyObject*, PyObject* args) {
+    int vk = 0;
+    if (!py.PyArg_ParseTuple(args, "i", &vk)) return nullptr;
+    UINT scan = MapVirtualKeyW(static_cast<UINT>(vk), 0 /* MAPVK_VK_TO_VSC */);
+    LONG lparam = static_cast<LONG>(scan) << 16;
+    if ((vk >= VK_PRIOR && vk <= VK_DOWN) || vk == VK_INSERT || vk == VK_DELETE || vk == VK_DIVIDE) lparam |= 1 << 24;
+    wchar_t name[64] = {};
+    std::string text = GetKeyNameTextW(lparam, name, 64) > 0 ? utf8(name) : "key " + std::to_string(vk);
+    return py.Py_BuildValue("s", text.c_str());
+}
+
 PyMethodDef methods[] = {
     {"set_sims", setSims, METH_VARARGS, "set_sims(bytes of (id u64, breasts f32, butt f32, flags u32)) -> Sims found"},
     {"set", setValue, METH_VARARGS, "set(name, value): on, breasts, butt"},
@@ -1474,6 +1575,11 @@ PyMethodDef methods[] = {
     {"status", status, METH_NOARGS, "(hooked, on, breasts, butt)"},
     {"size_of", sizeOf, METH_VARARGS, "size_of(object id) -> (size preset 0..3, measured scale) or None"},
     {"log", logText, METH_VARARGS, "log(text)"},
+    {"menu", menuText, METH_NOARGS, "menu() -> the menu rows as text"},
+    {"menu_key", menuKey, METH_NOARGS, "menu_key() -> 1 once per press of the menu key (not with the VR mod)"},
+    {"vr", vr, METH_NOARGS, "vr() -> 1 when the Sims 4 VR mod is loaded"},
+    {"capture", capture, METH_VARARGS, "capture(1) starts waiting for a key; capture(0) -> the key pressed (0 = none)"},
+    {"key_name", keyName, METH_VARARGS, "key_name(code) -> the key's name"},
     {nullptr, nullptr, 0, nullptr},
 };
 PyModuleDef moduleDef = {{{1, nullptr}, nullptr, 0, nullptr}, "_integratedbodyphysics", "Integrated Body Physics", -1, methods,
@@ -1531,12 +1637,7 @@ extern "C" __declspec(dllexport) int ibp_set(const char* key, float value) { ret
 
 // The settings menu as rows of text (src/menu.inc, docs/MENU-EXPORT.md); the values behind it go through
 // ibp_get / ibp_set.
-extern "C" __declspec(dllexport) const wchar_t* ibp_menu() {
-    static const wchar_t kMenu[] =
-#include "menu.inc"
-        ;
-    return kMenu;
-}
+extern "C" __declspec(dllexport) const wchar_t* ibp_menu() { return kMenu; }
 
 extern "C" __declspec(dllexport) PyObject* PyInit__integratedbodyphysics() {
     if (!loadApi()) return nullptr;

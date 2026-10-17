@@ -2,7 +2,8 @@
 game's Python has no ctypes) and tells it which Sims jiggle: young adults,
 adults and elders with a feminine frame, NPCs included. Never teens or younger, never men.
 
-Console (Ctrl+Shift+C): ibp on | off | breasts <0-2> | butt <0-2> | status
+Console (Ctrl+Shift+C): ibp on | off | breasts <0-2> | butt <0-2> | menu | status
+Settings menu without the VR mod: the '.' key (changeable in the menu), see menu.py.
 """
 import os
 import struct
@@ -211,11 +212,18 @@ def _start():
     _tick()
     from integratedbodyphysics import pie
     pie.start()
+    from integratedbodyphysics import menu
+    menu.start()
 
 
 def _stop():
     global _alarm, _ticks
     _ticks = 0
+    try:
+        from integratedbodyphysics import menu
+        menu.stop()
+    except Exception as e:
+        _log('menu stop: {!r}'.format(e))
     alarm, _alarm = _alarm, None
     if alarm is not None:
         import alarms
@@ -250,6 +258,10 @@ def _command():
         output = sims4.commands.CheatOutput(_connection)
         if _mod is None:
             output('Integrated Body Physics: integratedbodyphysics.dll not loaded')
+            return
+        if what == 'menu':
+            from integratedbodyphysics import menu
+            menu.show()
             return
         if what in ('on', 'off'):
             _mod.set('on', 1.0 if what == 'on' else 0.0)
