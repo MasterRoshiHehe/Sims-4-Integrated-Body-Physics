@@ -207,6 +207,74 @@ Value* findValue(const char* key) {
     return found;
 }
 
+// ---------------------------------------------------------------------------
+// Per-Sim settings (user 2026-10-19 00:08Z): "Freeze all motor functions" on a woman's pie makes her the
+// current Sim; the debug menu's "Configure current Sim" then edits settings for her alone, over the global
+// ones (and over her pie Gravity / Spacing presets). Unset values (NaN) follow the global settings.
+// Keys: sim_<breast field> (sim_strength, sim_hz ...), sim_<butt key> (sim_butt, sim_butt_hz ...),
+// sim_breasts_on, sim_butt_on; sim_frozen (read: 1 = a Sim is current), sim_reset (1 = clear hers).
+// Saved in integratedbodyphysics_simsettings.ini, a [sim <id>] section per Sim.
+const int kSimButtKeys[] = {kButt, kButtHz, kButtDamping, kButtMax, kButtUp, kButtSide, kButtFront, kButtGravity,
+                            kButtSize, kButtClothedStrength, kButtClothedHz, kButtClothedDamping, kButtClothedGravity};
+constexpr int kSimButt = static_cast<int>(sizeof(kSimButtKeys) / sizeof(kSimButtKeys[0]));
+constexpr int kSimBreastsOn = kFields_ + kSimButt, kSimButtOn = kSimBreastsOn + 1, kSimN = kSimButtOn + 1;
+struct SimSettings {
+    std::atomic<uint64_t> id{0};
+    std::atomic<float> v[kSimN];
+};
+constexpr int kSimSettings = 64;
+SimSettings g_simSet[kSimSettings];
+std::mutex g_simSetMutex;
+std::atomic<int> g_current{-1};  // g_simSet index of the frozen Sim, -1 = none
+std::atomic<int> g_currentSize{1};  // her size preset, for showing the global values she follows
+
+const char* simKeyName(int i, char* buf, size_t n) {
+    if (i < kFields_) std::snprintf(buf, n, "%s", kFields[i].name);
+    else if (i < kSimBreastsOn) std::snprintf(buf, n, "%s", g_values[kSimButtKeys[i - kFields_]].key);
+    else std::snprintf(buf, n, "%s", i == kSimBreastsOn ? "breasts_on" : "butt_on");
+    return buf;
+}
+int simKey(const char* name) {
+    char buf[40];
+    for (int i = 0; i < kSimN; ++i)
+        if (!_stricmp(simKeyName(i, buf, sizeof buf), name)) return i;
+    return -1;
+}
+// The table entry for a Sim id (made when `create`), or -1.
+int simSettingsOf(uint64_t id, bool create) {
+    if (!id) return -1;
+    for (int i = 0; i < kSimSettings; ++i)
+        if (g_simSet[i].id.load(std::memory_order_relaxed) == id) return i;
+    if (!create) return -1;
+    std::lock_guard<std::mutex> lock(g_simSetMutex);
+    for (int i = 0; i < kSimSettings; ++i)
+        if (g_simSet[i].id.load() == id) return i;
+    for (int i = 0; i < kSimSettings; ++i) {
+        bool empty = g_simSet[i].id.load() == 0;
+        if (!empty && i != g_current.load()) {  // reuse an entry with nothing set (not the frozen Sim's)
+            empty = true;
+            for (auto& x : g_simSet[i].v) empty &= !std::isfinite(x.load());
+        }
+        if (empty) {
+            for (auto& x : g_simSet[i].v) x = NAN;
+            g_simSet[i].id = id;
+            return i;
+        }
+    }
+    return -1;
+}
+void initSimSettings() {
+    for (SimSettings& e : g_simSet)
+        for (auto& x : e.v) x = NAN;
+}
+
+// The global value Sim setting i follows, for a Sim of size preset z.
+float simGlobal(int i, int z) {
+    if (i < kFields_) return g_preset[z][i].v.load(std::memory_order_relaxed);
+    if (i < kSimBreastsOn) return val(kSimButtKeys[i - kFields_]);
+    return val(i == kSimBreastsOn ? kBreastsOn : kButtOn);
+}
+
 bool readIni(const std::wstring& path, const char* key, float& out) {
     char buffer[64];
     GetPrivateProfileStringA("jiggle", key, "", buffer, sizeof(buffer), std::string(path.begin(), path.end()).c_str());
@@ -249,6 +317,28 @@ void readSettings() {
     if (migrated) {
         LOG("Settings: %d size preset values started from your 0.10.0 breast settings", migrated);
     }
+    {  // per-Sim settings
+        std::string simPath(g_folder.begin(), g_folder.end());
+        simPath += "integratedbodyphysics_simsettings.ini";
+        static char names[16384];
+        DWORD n = GetPrivateProfileSectionNamesA(names, sizeof names, simPath.c_str());
+        int sims = 0;
+        for (const char* sec = names; sec < names + n && *sec; sec += std::strlen(sec) + 1) {
+            unsigned long long id = 0;
+            if (std::sscanf(sec, "sim %llu", &id) != 1) continue;
+            int e = simSettingsOf(id, true);
+            if (e < 0) break;
+            ++sims;
+            char name[40], buf[64];
+            for (int i = 0; i < kSimN; ++i) {
+                GetPrivateProfileStringA(sec, simKeyName(i, name, sizeof name), "", buf, sizeof buf, simPath.c_str());
+                char* end = nullptr;
+                float x = std::strtof(buf, &end);
+                if (buf[0] && end != buf && std::isfinite(x)) g_simSet[e].v[i] = x;
+            }
+        }
+        if (sims) LOG("Settings: %d Sims with their own settings", sims);
+    }
     LOG("Settings: on %.0f, medium breasts %.2f (%.1f Hz, damping %.2f, up %.3f / down %.3f m), butt %.2f",
         val(kOn), pv(1, fStrength), pv(1, fHz), pv(1, fDamping), pv(1, fMaxUp), pv(1, fMaxDown), val(kButt));
 }
@@ -272,6 +362,22 @@ void saveSoon() {
                 std::snprintf(text, sizeof(text), "%g", v.v.load());
                 WritePrivateProfileStringA("jiggle", v.key, text, path.c_str());
             });
+            // Per-Sim settings: the file is written whole each time (cleared values and Sims drop out).
+            std::string simPath(g_folder.begin(), g_folder.end());
+            simPath += "integratedbodyphysics_simsettings.ini";
+            DeleteFileA(simPath.c_str());
+            for (SimSettings& e : g_simSet) {
+                uint64_t id = e.id.load();
+                if (!id) continue;
+                char section[40], name[40], text[32];
+                std::snprintf(section, sizeof section, "sim %llu", static_cast<unsigned long long>(id));
+                for (int i = 0; i < kSimN; ++i) {
+                    float x = e.v[i].load();
+                    if (!std::isfinite(x)) continue;
+                    std::snprintf(text, sizeof text, "%g", x);
+                    WritePrivateProfileStringA(section, simKeyName(i, name, sizeof name), text, simPath.c_str());
+                }
+            }
             LOG("Saved to integratedbodyphysics_user.ini");
         }
     }, nullptr, 0, nullptr);
@@ -303,7 +409,45 @@ void scaleFrom(int from) {
     saveSoon();
 }
 
+// "sim_..." keys (per-Sim settings, see SimSettings). False: not such a key.
+bool simGet(const char* key, float* out) {
+    if (!key || _strnicmp(key, "sim_", 4) || !out) return false;
+    const char* name = key + 4;
+    int cur = g_current.load();
+    if (!_stricmp(name, "frozen")) return *out = cur >= 0 ? 1.f : 0.f, true;
+    if (!_stricmp(name, "reset")) return *out = 0, true;
+    int i = simKey(name);
+    if (i < 0) return false;
+    float x = cur >= 0 ? g_simSet[cur].v[i].load() : NAN;
+    *out = std::isfinite(x) ? x : simGlobal(i, std::clamp(g_currentSize.load(), 0, kSizes - 1));
+    return true;
+}
+void saveSoon();
+bool simSet(const char* key, float f) {
+    if (!key || _strnicmp(key, "sim_", 4)) return false;
+    const char* name = key + 4;
+    int cur = g_current.load();
+    if (!_stricmp(name, "frozen")) return true;  // read only
+    if (!_stricmp(name, "reset")) {
+        if (cur >= 0 && f != 0) {
+            for (auto& x : g_simSet[cur].v) x = NAN;
+            LOG("Sim %llu: back to the global settings", static_cast<unsigned long long>(g_simSet[cur].id.load()));
+            saveSoon();
+        }
+        return true;
+    }
+    int i = simKey(name);
+    if (i < 0) return false;
+    if (cur < 0 || !std::isfinite(f)) return true;  // no Sim frozen: nothing to set
+    if (g_simSet[cur].v[i].exchange(f) != f) {
+        LOG("Sim %llu: set %s = %g", static_cast<unsigned long long>(g_simSet[cur].id.load()), name, f);
+        saveSoon();
+    }
+    return true;
+}
+
 bool setValue(const char* key, float f) {
+    if (simSet(key, f)) return true;
     Value* v = findValue(key);
     if (!v || !std::isfinite(f)) return false;
     if (v >= &g_values[kScaleFromSmall] && v <= &g_values[kScaleFromHuge]) {
@@ -436,6 +580,7 @@ std::atomic<uint32_t> g_simClothed[kMaxSims];  // 1: top covers the breasts, 2: 
 std::atomic<float> g_simGravity[kMaxSims];  // her own nude breast gravity (pie Gravity preset, -1..1); NaN = the setting
 std::atomic<float> g_simApart[kMaxSims];    // her own nude breasts apart (pie Spacing preset, metres); NaN = the setting
 std::atomic<int> g_simCup[kMaxSims];        // her pie Cup size (0 small .. 3 huge); -1 = from her CAS size
+std::atomic<int> g_simOwnSet[kMaxSims];     // her g_simSet entry (her own settings), -1 = none
 // The active Sim, and where it was the last time the game posed it (for the distance settings).
 std::atomic<void*> g_ownActor{nullptr};
 std::atomic<float> g_ownPos[3];
@@ -453,6 +598,7 @@ struct SimLook {
     uint32_t clothed = 0;
     float gravity = NAN, apart = NAN;
     int cup = -1;
+    int set = -1;  // her own settings (g_simSet), -1 = none
 };
 bool strengthOf(void* actor, SimLook& o) {
     int n = g_simCount.load(std::memory_order_acquire);
@@ -465,6 +611,7 @@ bool strengthOf(void* actor, SimLook& o) {
             o.gravity = g_simGravity[i].load(std::memory_order_relaxed);
             o.apart = g_simApart[i].load(std::memory_order_relaxed);
             o.cup = g_simCup[i].load(std::memory_order_relaxed);
+            o.set = g_simOwnSet[i].load(std::memory_order_relaxed);
             return o.breasts > 0 || o.butt > 0;
         }
     return false;
@@ -901,37 +1048,52 @@ int jiggle(uint8_t* actor, uint8_t* pose, SimLook look) {
         }
     }
     const int z = look.cup >= 0 && look.cup < kSizes ? look.cup : sizeFrom(st.measured);
+    if (look.set >= 0 && look.set == g_current.load(std::memory_order_relaxed))
+        g_currentSize.store(z, std::memory_order_relaxed);
+    // Her own settings (frozen Sim's "Configure current Sim") over the global ones.
+    auto hasOwn = [&](int i) {
+        return look.set >= 0 && std::isfinite(g_simSet[look.set].v[i].load(std::memory_order_relaxed));
+    };
+    auto own = [&](int i, float global) {
+        return hasOwn(i) ? g_simSet[look.set].v[i].load(std::memory_order_relaxed) : global;
+    };
+    auto P = [&](int f) { return own(f, pv(z, f)); };
+    auto B = [&](int key) {
+        for (int i = 0; i < kSimButt; ++i)
+            if (kSimButtKeys[i] == key) return own(kFields_ + i, val(key));
+        return val(key);
+    };
 
     const bool topOn = (look.clothed & 1) != 0, bottomOn = (look.clothed & 2) != 0;
     // Breasts: her size preset, clothed or nude.
-    float breastHz = pv(z, fHz) * (topOn ? pv(z, fClothedHz) : 1);
-    float breastDamping = pv(z, fDamping) * (topOn ? pv(z, fClothedDamping) : 1);
+    float breastHz = P(fHz) * (topOn ? P(fClothedHz) : 1);
+    float breastDamping = P(fDamping) * (topOn ? P(fClothedDamping) : 1);
     // Gravity: her own nude one (pie Gravity preset) or the preset's; clothed adds the clothed offset, which
     // can take it below 0: the top pushes them up (user 2026-10-15 03:10Z, Bolt on + push-up).
-    float breastGravity = (std::isfinite(look.gravity) ? look.gravity : pv(z, fGravity)) + (topOn ? pv(z, fClothedGravity) : 0);
+    float breastGravity = (!hasOwn(fGravity) && std::isfinite(look.gravity) ? look.gravity : P(fGravity)) + (topOn ? P(fClothedGravity) : 0);
     // Each breast moves half the change in the gap, sideways in the Sim's frame (away from her middle).
-    const float apart = std::clamp((std::isfinite(look.apart) ? look.apart : pv(z, fApart)) +
-                                       (topOn ? pv(z, fClothedApart) : 0), -0.1f, 0.1f);
-    const float breasts = val(kBreastsOn) != 0 ? pv(z, fStrength) * simBreasts * (topOn ? pv(z, fClothedStrength) : 1) : 0;
-    const Vec3 breastShare{pv(z, fSide), pv(z, fUp), pv(z, fFront)};
+    const float apart = std::clamp((!hasOwn(fApart) && std::isfinite(look.apart) ? look.apart : P(fApart)) +
+                                       (topOn ? P(fClothedApart) : 0), -0.1f, 0.1f);
+    const float breasts = own(kSimBreastsOn, val(kBreastsOn)) != 0 ? P(fStrength) * simBreasts * (topOn ? P(fClothedStrength) : 1) : 0;
+    const Vec3 breastShare{P(fSide), P(fUp), P(fFront)};
     // Butt (parked): one value for every Sim.
-    float buttMax = val(kButtMax);
-    const Vec3 buttShare{val(kButtSide), val(kButtUp), val(kButtFront)};
+    float buttMax = B(kButtMax);
+    const Vec3 buttShare{B(kButtSide), B(kButtUp), B(kButtFront)};
     for (int b = 0; b < kBones; ++b) {
         bool breast = b < kLeftHip;
-        st.input.hz[b] = breast ? breastHz : val(kButtHz) * (bottomOn ? val(kButtClothedHz) : 1);
-        st.input.damping[b] = breast ? breastDamping : val(kButtDamping) * (bottomOn ? val(kButtClothedDamping) : 1);
-        st.input.gravity[b] = breast ? breastGravity : val(kButtGravity) + (bottomOn ? val(kButtClothedGravity) : 0);
-        st.input.radius[b] = breast ? pv(z, fSize) : val(kButtSize);
-        st.input.yourRadius[b] = breast ? pv(z, fSizeYou) : val(kButtSize);
-        st.input.mass[b] = breast && val(kWeightOn) != 0 ? pv(z, fWeight) : 0;  // 0: the 0.10 ball, no force cap
+        st.input.hz[b] = breast ? breastHz : B(kButtHz) * (bottomOn ? B(kButtClothedHz) : 1);
+        st.input.damping[b] = breast ? breastDamping : B(kButtDamping) * (bottomOn ? B(kButtClothedDamping) : 1);
+        st.input.gravity[b] = breast ? breastGravity : B(kButtGravity) + (bottomOn ? B(kButtClothedGravity) : 0);
+        st.input.radius[b] = breast ? P(fSize) : B(kButtSize);
+        st.input.yourRadius[b] = breast ? P(fSizeYou) : B(kButtSize);
+        st.input.mass[b] = breast && val(kWeightOn) != 0 ? P(fWeight) : 0;  // 0: the 0.10 ball, no force cap
         if (breast) {  // bigger-looking breasts are bigger to push too
-            st.input.radius[b] *= std::clamp(pv(z, fScale), 0.25f, 3.0f);
-            st.input.yourRadius[b] *= std::clamp(pv(z, fScale), 0.25f, 3.0f);
+            st.input.radius[b] *= std::clamp(P(fScale), 0.25f, 3.0f);
+            st.input.yourRadius[b] *= std::clamp(P(fScale), 0.25f, 3.0f);
         }
         // Limits in the Sim's frame: x side, y up (hi) / down (lo), z front and back.
-        float side = breast ? pv(z, fMaxSide) : buttMax, up = breast ? pv(z, fMaxUp) : buttMax;
-        float down = breast ? pv(z, fMaxDown) : buttMax, front = breast ? pv(z, fMaxFront) : buttMax;
+        float side = breast ? P(fMaxSide) : buttMax, up = breast ? P(fMaxUp) : buttMax;
+        float down = breast ? P(fMaxDown) : buttMax, front = breast ? P(fMaxFront) : buttMax;
         st.input.lo[b][0] = -side;
         st.input.hi[b][0] = side;
         st.input.lo[b][1] = -down;
@@ -941,13 +1103,13 @@ int jiggle(uint8_t* actor, uint8_t* pose, SimLook look) {
     }
     // Bodies weight only about a quarter of each cheek to butt bones: move those further so 1 shows.
     constexpr float kButtBoost = 3.5f;
-    const float butt = val(kButtOn) != 0 ? val(kButt) * simButt * (bottomOn ? val(kButtClothedStrength) : 1) *
+    const float butt = own(kSimButtOn, val(kButtOn)) != 0 ? B(kButt) * simButt * (bottomOn ? B(kButtClothedStrength) : 1) *
                                                (st.buttBones ? kButtBoost : 1)
                                          : 0;
-    const float swing = val(kSwingOn) != 0 ? pv(z, fSwing) : 0, squish = val(kSquishOn) != 0 ? pv(z, fSquish) : 0;
+    const float swing = val(kSwingOn) != 0 ? P(fSwing) : 0, squish = val(kSquishOn) != 0 ? P(fSquish) : 0;
     // Size: how big they look, times her own (the bone's scale), whether they jiggle this frame or not.
-    const float look3 = std::clamp(pv(z, fScale), 0.25f, 3.0f);
-    if (std::fabs(look3 - 1) > 1e-3f && val(kBreastsOn) != 0)
+    const float look3 = std::clamp(P(fScale), 0.25f, 3.0f);
+    if (std::fabs(look3 - 1) > 1e-3f && own(kSimBreastsOn, val(kBreastsOn)) != 0)
         for (int b = 0; b < kLeftHip; ++b) {
             int j = st.bone[b];
             if (j < 0) continue;
@@ -1281,12 +1443,14 @@ void install() {
     readSettings();
     wchar_t exe[MAX_PATH] = L"";
     GetModuleFileNameW(nullptr, exe, MAX_PATH);
-    LOG("Integrated Body Physics 0.12.1 in %ls", exe);
+    LOG("Integrated Body Physics 0.13.0 in %ls", exe);
     if (rtbpLoaded()) {
         LOG("RTBP's d3d11.dll is loaded%s", val(kWithRtbp) != 0 ? " (with_rtbp = 1: running anyway)" : ": staying off (with_rtbp = 1 runs both)");
         if (val(kWithRtbp) == 0) return;
     }
-    if (val(kShaderProbe) != 0) gpuprobe::start(g_folder, &logLine, static_cast<int>(val(kShaderProbe)));
+    // The breast wave test (6) is halted (user 2026-10-18 20:23Z: frame rate terrible, wave never seen): ignored.
+    if (val(kShaderProbe) == 6) LOG("GPU probe: the wave test (shader_probe 6) is halted: nothing hooked");
+    else if (val(kShaderProbe) != 0) gpuprobe::start(g_folder, &logLine, static_cast<int>(val(kShaderProbe)));
     uint8_t* caller = find(kCaller);
     g_model = reinterpret_cast<ModelTransformFn>(find(kModel));
     g_jointIndex = reinterpret_cast<JointIndexFn>(find(kJointIndex));
@@ -1433,7 +1597,7 @@ PyObject* setSims(PyObject*, PyObject* args) {
     if (n > kMaxSims) n = kMaxSims;
     void* actors[kMaxSims];
     float strength[kMaxSims], butt[kMaxSims], gravityOf[kMaxSims], apartOf[kMaxSims];
-    int cupOf[kMaxSims];
+    int cupOf[kMaxSims], setOf[kMaxSims];
     bool own[kMaxSims];
     uint32_t clothedOf[kMaxSims];
     for (int i = 0; i < n; ++i) {
@@ -1459,6 +1623,7 @@ PyObject* setSims(PyObject*, PyObject* args) {
         gravityOf[found] = g;  // NaN: the setting (0.11.14; was -1, and the pie used 0..1)
         apartOf[found] = ap;  // NaN: the setting
         cupOf[found] = cup >= 0 && cup < kSizes ? cup : -1;
+        setOf[found] = simSettingsOf(id, false);
         butt[found++] = b;
     }
     // Shrink first, then fill, then grow: a reader never sees an unset entry.
@@ -1472,6 +1637,7 @@ PyObject* setSims(PyObject*, PyObject* args) {
         g_simGravity[i].store(gravityOf[i], std::memory_order_relaxed);
         g_simApart[i].store(apartOf[i], std::memory_order_relaxed);
         g_simCup[i].store(cupOf[i], std::memory_order_relaxed);
+        g_simOwnSet[i].store(setOf[i], std::memory_order_relaxed);
         g_simActor[i].store(actors[i], std::memory_order_relaxed);
     }
     g_simCount.store(found, std::memory_order_release);
@@ -1501,6 +1667,8 @@ PyObject* status(PyObject*, PyObject*) {
 PyObject* getValue(PyObject*, PyObject* args) {
     const char* name = nullptr;
     if (!py.PyArg_ParseTuple(args, "s", &name)) return nullptr;
+    float x;
+    if (simGet(name, &x)) return py.Py_BuildValue("d", static_cast<double>(x));
     Value* v = findValue(name);
     if (!v) return none();
     return py.Py_BuildValue("d", static_cast<double>(v->v.load()));
@@ -1523,6 +1691,15 @@ PyObject* logText(PyObject*, PyObject* args) {
     const char* text = nullptr;
     if (!py.PyArg_ParseTuple(args, "s", &text)) return nullptr;
     LOG("script: %s", text);
+    return none();
+}
+
+// set_current(Sim id): the frozen Sim whose own settings the menu edits; 0 = none.
+PyObject* setCurrent(PyObject*, PyObject* args) {
+    unsigned long long id = 0;
+    if (!py.PyArg_ParseTuple(args, "K", &id)) return nullptr;
+    int e = id ? simSettingsOf(id, true) : -1;
+    if (g_current.exchange(e) != e) LOG("Current Sim for her own settings: %llu", id);
     return none();
 }
 
@@ -1576,6 +1753,7 @@ PyMethodDef methods[] = {
     {"size_of", sizeOf, METH_VARARGS, "size_of(object id) -> (size preset 0..3, measured scale) or None"},
     {"log", logText, METH_VARARGS, "log(text)"},
     {"menu", menuText, METH_NOARGS, "menu() -> the menu rows as text"},
+    {"set_current", setCurrent, METH_VARARGS, "set_current(Sim id): the frozen Sim the menu's own settings edit; 0 = none"},
     {"menu_key", menuKey, METH_NOARGS, "menu_key() -> 1 once per press of the menu key (not with the VR mod)"},
     {"vr", vr, METH_NOARGS, "vr() -> 1 when the Sims 4 VR mod is loaded"},
     {"capture", capture, METH_VARARGS, "capture(1) starts waiting for a key; capture(0) -> the key pressed (0 = none)"},
@@ -1621,6 +1799,7 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {
         std::wstring p(path, n);
         g_folder = p.substr(0, p.find_last_of(L"\\/") + 1);
         initPresets();
+        initSimSettings();
     }
     return TRUE;
 }
@@ -1628,6 +1807,7 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {
 // For other mods (the Sims 4 VR debug menu): read and change a setting by its
 // integratedbodyphysics.ini key. 1 = known key.
 extern "C" __declspec(dllexport) int ibp_get(const char* key, float* out) {
+    if (simGet(key, out)) return 1;
     Value* v = findValue(key);
     if (!v || !out) return 0;
     *out = v->v.load();

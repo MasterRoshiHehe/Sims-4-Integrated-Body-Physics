@@ -37,6 +37,7 @@ STRETCH = (96787,)  # sim_doStretching
 POSES = (('Neutral', NEUTRAL), ('Dance', DANCE), ('Stretch', STRETCH))
 
 _held = {}  # sim id -> affordance
+_current = 0  # the frozen Sim's id, 0 = none
 _since = {}  # sim id -> when the hold started (time.monotonic)
 _reset_done = set()  # sim ids reset once for this hold
 _leave_later = {}  # sim id -> 'leave' or 'now': the game asked her to leave while held
@@ -171,8 +172,38 @@ def held_affordance(sim):
     return _held.get(sim.sim_info.sim_id)
 
 
+def _set_current(sim_id):
+    """The frozen Sim is the debug menu's current Sim ("Configure current Sim")."""
+    global _current
+    _current = sim_id
+    try:
+        from integratedbodyphysics import _mod
+        _mod.set_current(sim_id)
+    except Exception as e:
+        _log('set current failed: {!r}'.format(e))
+
+
+def freeze(sim):
+    """"Freeze all motor functions": holds her in the neutral pose and makes her the current Sim. One Sim at a
+    time: a Sim frozen before is let go."""
+    import services
+    manager = services.sim_info_manager()
+    for other_id in list(_held):
+        info = manager.get(other_id) if manager is not None else None
+        other = info.get_sim_instance() if info is not None else None
+        if other is not None and other is not sim:
+            release(other)
+        elif other is None:
+            _held.pop(other_id, None)
+    hold(sim, NEUTRAL, 'Neutral')
+    if holding(sim):
+        _set_current(sim.sim_info.sim_id)
+
+
 def release(sim):
     sim_id = sim.sim_info.sim_id
+    if _current == sim_id:
+        _set_current(0)
     _held.pop(sim_id, None)
     _since.pop(sim_id, None)
     _reset_done.discard(sim_id)
@@ -207,6 +238,8 @@ def tick():
         info = manager.get(sim_id) if manager is not None else None
         sim = info.get_sim_instance() if info is not None else None
         if sim is None:
+            if _current == sim_id:
+                _set_current(0)
             _held.pop(sim_id, None)
             _since.pop(sim_id, None)
             _leave_later.pop(sim_id, None)

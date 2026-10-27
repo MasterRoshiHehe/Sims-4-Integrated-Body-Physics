@@ -47,8 +47,8 @@ def _flags(f):
 
 def _shown(f, vr):
     """Whether the row shows: 'vr' rows only with the VR mod, 'novr' rows only without it."""
-    at = {'switch': 4, 'number': 9, 'confirm': 4, 'key': 4}.get(f[0])
-    flags = _flags(f[at] if at is not None and len(f) > at else '')
+    at = {'link': 4, 'switch': 4, 'number': 9, 'confirm': 4, 'key': 4}.get(f[0])
+    flags = set(x for x in _flags(f[at] if at is not None and len(f) > at else '') if '=' not in x)
     return not (('vr' in flags and not vr) or ('novr' in flags and vr))
 
 
@@ -77,7 +77,19 @@ def _label(f):
     return f[2] + '...'
 
 
+def _enabled(f):
+    """A link with when=<key> opens only while that value isn't 0 (else greyed, with its off tip)."""
+    if f[0] != 'link' or len(f) <= 4:
+        return True
+    for flag in _flags(f[4]):
+        if flag.startswith('when=') and _value(flag[5:]) == 0:
+            return False
+    return True
+
+
 def _tip(f):
+    if f[0] == 'link':
+        return 5 if _enabled(f) else 6
     return {'switch': 5, 'number': 10, 'confirm': 5, 'key': 5}.get(f[0])
 
 
@@ -113,7 +125,8 @@ def show(page='main'):
         description = f[tip] if tip is not None and len(f) > tip else ''
         text = LocalizationHelperTuning.get_raw_text(description) if description else None
         dialog.add_row(ObjectPickerRow(
-            option_id=i, name=LocalizationHelperTuning.get_raw_text(_label(f)), row_description=text,
+            option_id=i, is_enable=_enabled(f), name=LocalizationHelperTuning.get_raw_text(_label(f)),
+            row_description=text,
             row_tooltip=(lambda text=text: text) if text else None, tag=tuple(f)))
 
     def on_response(d):
@@ -136,7 +149,7 @@ def show(page='main'):
 def _pick(page, f):
     kind = f[0]
     if kind == 'link':
-        show(f[3])
+        show(f[3] if _enabled(f) else page)
     elif kind == 'switch':
         _mod().set(f[3], 0.0 if _value(f[3]) != 0 else 1.0)
         show(page)

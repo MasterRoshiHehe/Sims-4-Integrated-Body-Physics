@@ -403,8 +403,11 @@ def _build(base):
     for order, (name, ids) in enumerate(pose.POSES):
         out.append(_make(base, len(out), pprefix + name, posemenu, _pose_check(ids),
                          lambda sim, i=ids, n=name: pose.hold(sim, i, n), order))
-    out.append(_make(base, len(out), pprefix + 'Let her go', posemenu,
-                     lambda sim: None if pose.holding(sim) else ('not held', False), pose.release, 9))
+    # Was "Let her go" in the Pose menu: now the freeze toggle in the top menu (user 2026-10-19 00:08Z); the
+    # Pose menu only shows while she is frozen.
+    out.append(_make(base, len(out),
+                     lambda sim: prefix + ('As you were' if pose.holding(sim) else 'Freeze all motor functions'),
+                     config, _freeze_check, lambda sim: pose.release(sim) if pose.holding(sim) else pose.freeze(sim), 8))
     gprefix = '' if gravity is not None else prefix + 'Gravity: '
     for order, (name, value) in enumerate(GRAVITY):
         out.append(_make(base, len(out), gprefix + name, gravity, _gravity_check(value),
@@ -437,9 +440,18 @@ def _build(base):
     return out
 
 
+def _freeze_check(sim):
+    from integratedbodyphysics import pose
+    if pose.holding(sim):
+        return None
+    return None if pose.affordance(pose.NEUTRAL) is not None else ('not in this game', False)
+
+
 def _pose_check(ids):
     def check(sim):
         from integratedbodyphysics import pose
+        if not pose.holding(sim):
+            return 'not frozen', False
         aff = pose.affordance(ids)
         if aff is None:
             return 'not in this game', False

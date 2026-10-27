@@ -184,4 +184,59 @@ page	hands_adv	hands	Pushing and holding: advanced
 number	hands_adv	Arm thickness for pushing	arm_size	0.5	2	0.1	1	%.1f×		How thick arms and hands count as when they push. Higher touches sooner and pushes further.
 number	hands_adv	Holding: furthest you can pull	grab_reach	0.02	0.3	0.01	100	%.0f cm	vr	How far a held breast can be pulled from where it rests.
 number	hands_adv	Holding: press grip and trigger	grab_press	0.1	1	0.05	100	%.0f%%	vr	How far grip and trigger must both be pressed to hold. Lower = a lighter squeeze holds.
+link	main	Configure current Sim	sim	when=sim_frozen	This page edits every physics setting for the frozen Sim only. Her values win over the global settings (the Breasts and Butt pages, her size preset) and over her pie Gravity and Spacing; values you leave alone follow the global ones.	No Sim is frozen. Open a woman's pie menu and pick Body Physics > Freeze all motor functions to make her the current Sim; this page then edits her own settings.
+page	sim	main	Configure current Sim
+switch	sim	Breasts jiggle	sim_breasts_on		Her breasts jiggle at all.
+switch	sim	Butt jiggles	sim_butt_on		Her butt jiggles at all.
+link	sim	Breasts	sim_breasts
+link	sim	Butt	sim_butt
+confirm	sim	Back to the global settings	sim_reset		Clears all her own settings: she follows the global ones again.
+page	sim_breasts	sim	Her breasts
+number	sim_breasts	Strength	sim_strength	0	8	0.1	1	%.1f		How much of the physics movement shows. 0 = no jiggle, 1 = what the physics does, higher exaggerates every bounce.
+number	sim_breasts	Bounce speed	sim_hz	0.5	12	0.25	1	%.2f Hz		How many times a second they swing back and forth. Low = slow, heavy, floppy sway. High = quick, tight, firm wobble.
+number	sim_breasts	Damping	sim_damping	0.05	1	0.05	1	%.2f		How fast the bouncing dies down. Low = keeps bouncing a long time after a move. 1 = settles at once without swinging back.
+number	sim_breasts	Swing	sim_swing	0	2	0.05	100	%.0f%%		How much they tilt as they move, not just shift: a breast that drops points down. 0% = they only shift.
+number	sim_breasts	Weight	sim_weight	0.1	3	0.05	1	%.2f kg		How heavy each one is. Heavier = falls behind sharp moves and swings back slower, less lively. Light = quick and springy.
+number	sim_breasts	Gravity	sim_gravity	0	1	0.05	100	%.0f%%		Lets gravity pull them down, so they sag and swing with more weight. For Sims without a pie Gravity preset. 0% = the pose alone decides how they hang.
+link	sim_breasts	How far they move	sim_breasts_moves
+link	sim_breasts	Shape and touch	sim_breasts_shape
+link	sim_breasts	Clothed	sim_breasts_clothed
+page	sim_breasts_moves	sim_breasts	How far they move
+number	sim_breasts_moves	Most they move up	sim_max_up	0.005	0.25	0.005	100	%.1f cm		The furthest they can bounce up from where the pose puts them, before Strength.
+number	sim_breasts_moves	Most they move down	sim_max_down	0.005	0.25	0.005	100	%.1f cm		The furthest they can drop below where the pose puts them.
+number	sim_breasts_moves	Most they move sideways	sim_max_side	0.005	0.25	0.005	100	%.1f cm		The furthest they can swing to either side.
+number	sim_breasts_moves	Most they move front and back	sim_max_front	0.005	0.25	0.005	100	%.1f cm		The furthest they can swing forwards or back.
+number	sim_breasts_moves	Up and down	sim_up	0	3	0.1	1	%.1f×		How much of the movement shows up and down: the bounce from steps, jumps and sitting down.
+number	sim_breasts_moves	Side to side	sim_side	0	3	0.1	1	%.1f×		How much shows left and right: the sway when the Sim turns or shifts weight.
+number	sim_breasts_moves	Front and back	sim_front	0	3	0.1	1	%.1f×		How much shows forwards and backwards: the swing when the Sim starts, stops or leans.
+page	sim_breasts_shape	sim_breasts	Shape and touch
+number	sim_breasts_shape	Size	sim_scale	0.5	2	0.05	100	%.0f%%		How big they look, times her own CAS size. Their sizes for pushing grow with it.
+number	sim_breasts_shape	Squish	sim_squish	0	2	0.05	100	%.0f%%		How much they flatten where an arm or hand presses, and bulge out to the sides. 0% = never.
+number	sim_breasts_shape	Apart	sim_apart	-0.05	0.05	0.0025	100	%+.2f cm		How much wider the gap between them is, for Sims without a pie Spacing preset. Below 0 = pushed together.
+number	sim_breasts_shape	Size for your hands	sim_size_you	0.02	0.12	0.005	100	%.1f cm	vr	How big they count as when your VR hands touch them (radius). Bigger = touched sooner. Doesn't change how they look.
+number	sim_breasts_shape	Size for her own arms	sim_size	0.02	0.12	0.005	100	%.1f cm		How big they count as when her own arms and hands push them (radius).
+page	sim_breasts_clothed	sim_breasts	Clothed
+number	sim_breasts_clothed	Clothed: strength	sim_clothed_strength	0	2	0.05	100	%.0f%%		How much of the jiggle is left while a top covers them, compared with nude.
+number	sim_breasts_clothed	Clothed: bounce speed	sim_clothed_hz	0.5	3	0.05	1	%.2f×		Bounce speed while clothed, times the nude one. Above 1 = tighter, firmer wobble.
+number	sim_breasts_clothed	Clothed: damping	sim_clothed_damping	0.5	3	0.05	1	%.2f×		Damping while clothed, times the nude one. Above 1 = the bouncing dies down sooner.
+number	sim_breasts_clothed	Clothed: gravity	sim_clothed_gravity	-1	1	0.05	100	%+.0f%%		Added to her gravity while a top covers them. Below 0 = the top lifts them, like a push-up bra.
+number	sim_breasts_clothed	Clothed: apart	sim_clothed_apart	-0.05	0.05	0.0025	100	%+.2f cm		Added to her spacing while a top covers them. Below 0 = pushed together.
+page	sim_butt	sim	Her butt
+number	sim_butt	Strength	sim_butt	0	8	0.1	1	%.1f		How much of the physics movement shows. The game has no butt bone, so this moves the thigh twist bones: the lower butt and upper thighs jiggle together.
+number	sim_butt	Bounce speed	sim_butt_hz	0.5	12	0.25	1	%.2f Hz		How many times a second it swings back and forth. Low = slow, heavy sway. High = quick, firm wobble.
+number	sim_butt	Damping	sim_butt_damping	0.05	1	0.05	1	%.2f		How fast the bouncing dies down. Low = keeps bouncing a long time. 1 = settles at once.
+number	sim_butt	Most it moves	sim_butt_max	0.005	0.15	0.005	100	%.1f cm		The furthest it can move from where the pose puts it, before Strength.
+number	sim_butt	Gravity	sim_butt_gravity	0	1	0.05	100	%.0f%%		Lets gravity pull it down, for a heavier sag and swing. 0% = the pose alone decides.
+number	sim_butt	Size for pushing	sim_butt_size	0.02	0.12	0.005	100	%.1f cm		How big it counts as when hands push it (radius). Bigger = touched sooner.
+link	sim_butt	Directions	sim_butt_moves
+link	sim_butt	Clothed	sim_butt_clothed
+page	sim_butt_moves	sim_butt	Directions
+number	sim_butt_moves	Up and down	sim_butt_up	0	3	0.1	1	%.1f×		How much of the movement shows up and down: the bounce from steps, jumps and sitting down.
+number	sim_butt_moves	Side to side	sim_butt_side	0	3	0.1	1	%.1f×		How much shows left and right: the sway with each step and turn.
+number	sim_butt_moves	Front and back	sim_butt_front	0	3	0.1	1	%.1f×		How much shows forwards and backwards: the swing when the Sim starts, stops or bends.
+page	sim_butt_clothed	sim_butt	Clothed
+number	sim_butt_clothed	Clothed: strength	sim_butt_clothed_strength	0	2	0.05	100	%.0f%%		How much of the jiggle is left while a bottom covers it, compared with nude. Nude = the Sim's own bathing outfit part, as when undressed.
+number	sim_butt_clothed	Clothed: bounce speed	sim_butt_clothed_hz	0.5	3	0.05	1	%.2f×		Bounce speed while clothed, times the nude one. Above 1 = tighter, firmer wobble, as when fabric holds it.
+number	sim_butt_clothed	Clothed: damping	sim_butt_clothed_damping	0.5	3	0.05	1	%.2f×		Damping while clothed, times the nude one. Above 1 = the bouncing dies down sooner.
+number	sim_butt_clothed	Clothed: gravity	sim_butt_clothed_gravity	-1	1	0.05	100	%+.0f%%		Added to Gravity above while a bottom covers it. Below 0 lifts it.
 )IBP"

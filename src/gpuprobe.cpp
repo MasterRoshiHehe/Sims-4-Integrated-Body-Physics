@@ -53,11 +53,13 @@ std::unordered_map<const void*, unsigned> g_skinnedVs;  // vertex shaders with b
 // wave. Plain CPU stores into the block the game just wrote; no GPU command of ours.
 // The test's fixed wave: metres (as seen, after her breast scale), cycles per second. 0.11.19 used 1.5 cm before her
 // breast scale (~4 cm seen) and broke chests (user 2026-10-17 14:42Z).
-constexpr float kWaveAmp = 0.012f, kWaveHz = 1.0f;  // 0.11.20: 4 mm at 1.5 Hz was too small to see (user 15:22Z)
+constexpr float kWaveAmp = 0.03f, kWaveHz = 1.0f;  // 0.12.2: 1.2 cm not seen (user 2026-10-18 14:34Z)
+// 0.11.20: 4 mm at 1.5 Hz was too small to see (user 15:22Z)
 std::shared_mutex g_waveMutex;
 std::unordered_map<const void*, unsigned> g_waveVs;  // patched shader -> its bone palette's first cb0 row
+std::atomic<const void*> g_waveActor{nullptr};  // the Sim last tagged
 std::atomic<unsigned> g_wavePatched{0}, g_waveRefused{0}, g_waveBinds{0}, g_waveTagged{0}, g_waveNoSim{0},
-    g_waveNoSlot{0};
+    g_waveNoSlot{0}, g_waveSeen{0};
 struct WaveSim {
     const void* actor = nullptr;
     float pos[3] = {};
@@ -68,7 +70,11 @@ struct WaveSim {
 std::mutex g_simMutex;
 WaveSim g_sims[32];
 thread_local const void* t_vs = nullptr;                      // the vertex shader set on this thread's context
-thread_local std::unordered_map<const void*, void*> t_mapped;  // buffer -> its last mapped address on this thread
+struct Mapped {
+    void* data;
+    UINT size;
+};
+thread_local std::unordered_map<const void*, Mapped> t_mapped;  // big constant buffer -> its mapping on this thread
 thread_local const unsigned char* t_okFrom = nullptr;          // last region found writable
 thread_local size_t t_okSize = 0;
 double g_qpcHz = 1;
@@ -548,6 +554,9 @@ bool writable(void* at, size_t bytes) {
 }
 
 // Mode 6: a patched shader binds a block of the game's bone buffer.
+// 0.12.3: a patched shader binds a block: count whether our tag is in it. (0.11.19-0.12.2 wrote the tag here,
+// after the game's Unmap: a deferred context's runtime has already copied the data by then, so it never reached
+// the GPU and no wave showed, user 2026-10-18 15:15Z.)
 void waveBind(UINT start, UINT n, ID3D11Buffer* const* b, const UINT* first, const UINT* count) {
     if (start != 0 || !n || !b || !b[0] || !first || !count || !t_vs) return;
     unsigned base;
@@ -560,51 +569,60 @@ void waveBind(UINT start, UINT n, ID3D11Buffer* const* b, const UINT* first, con
     g_waveBinds.fetch_add(1, std::memory_order_relaxed);
     if (count[0] < base + 180) return;
     auto at = t_mapped.find(b[0]);
-    if (at == t_mapped.end() || !at->second) return;
-    float* blk = reinterpret_cast<float*>(static_cast<unsigned char*>(at->second) + size_t(first[0]) * 16);
-    if (!writable(blk, size_t(base + 180) * 16)) return;
+    if (at == t_mapped.end() || !at->second.data) return;
+    const float* blk =
+        reinterpret_cast<const float*>(static_cast<unsigned char*>(at->second.data) + size_t(first[0]) * 16);
+    if (!readable(blk, 64)) return;
+    uint32_t x;
+    std::memcpy(&x, blk + 12, 4);
+    if (x >= wavepatch::kSlotTag && x < wavepatch::kSlotTag + 60) g_waveSeen.fetch_add(1, std::memory_order_relaxed);
+}
+
+// The Sim the wave goes to, looked up once per Unmap (0.12.4: 0.12.3 locked and searched every Sim for each of
+// ~250k blocks a second: the game's frame went from ~8 to ~32 ms, user 2026-10-18 20:09Z).
+struct WaveTarget {
+    const void* actor = nullptr;
+    float pos[3] = {};
+    float det[2] = {};
+};
+bool waveTarget(WaveTarget& t) {
+    ULONGLONG now = GetTickCount64();
+    std::lock_guard<std::mutex> lock(g_simMutex);
+    const WaveSim* she = nullptr;  // the jiggling Sim nearest your Sim
+    for (const WaveSim& s : g_sims)
+        if (s.actor && now - s.tick <= 1000 && (!she || s.toYou < she->toYou)) she = &s;
+    if (!she || (she->det[0] <= 0 && she->det[1] <= 0)) return false;
+    auto closeBy = [&](const WaveSim& s) {
+        float dx = she->pos[0] - s.pos[0], dy = she->pos[1] - s.pos[1], dz = she->pos[2] - s.pos[2];
+        return dx * dx + dy * dy + dz * dz < 0.6f * 0.6f;
+    };
+    for (const WaveSim& s : g_sims)  // another Sim right by her with a breast size close to hers: no wave
+        if (&s != she && s.actor && now - s.tick <= 1000 && closeBy(s))
+            for (float x : s.det)
+                for (float y : she->det)
+                    if (x > 0 && y > 0 && std::fabs(x - y) < 0.03f * y) return false;
+    t.actor = she->actor;
+    std::memcpy(t.pos, she->pos, sizeof t.pos);
+    std::memcpy(t.det, she->det, sizeof t.det);
+    return true;
+}
+
+// Her bone block (bones from cb0 row `base`) gets the wave tag in row 3. False: no breast bone of hers in it.
+bool waveTag(float* blk, unsigned base, const WaveTarget& she) {
     float* row3 = blk + 12;
-    if (!(row3[0] == 0.f && row3[1] == 0.f && row3[2] == 0.f && row3[3] == 1.f)) return;  // not a Sim's, or done
-    float det[2] = {0, 0};
-    {
-        ULONGLONG now = GetTickCount64();
-        std::lock_guard<std::mutex> lock(g_simMutex);
-        const WaveSim* she = nullptr;  // the jiggling Sim nearest your Sim
-        for (const WaveSim& s : g_sims)
-            if (s.actor && now - s.tick <= 1000 && (!she || s.toYou < she->toYou)) she = &s;
-        auto closeBy = [&](const WaveSim& s) {
-            float dx = blk[3] - s.pos[0], dy = blk[7] - s.pos[1], dz = blk[11] - s.pos[2];
-            return dx * dx + dy * dy + dz * dz < 0.3f * 0.3f;
-        };
-        if (she && closeBy(*she)) {
-            det[0] = she->det[0], det[1] = she->det[1];
-            for (const WaveSim& s : g_sims)  // another Sim right there with a breast size close to hers: skip
-                if (&s != she && s.actor && now - s.tick <= 1000 && closeBy(s))
-                    for (float a : s.det)
-                        for (float b : det)
-                            if (a > 0 && b > 0 && std::fabs(a - b) < 0.03f * b) det[0] = det[1] = 0;
-        }
-    }
-    if (det[0] <= 0 && det[1] <= 0) {
-        g_waveNoSim.fetch_add(1, std::memory_order_relaxed);
-        return;
-    }
     // Her breast bones' slots: their skin matrices carry her CAS breast scale (det = its product).
     int slots[2] = {-1, -1}, found = 0;
     for (int k = 0; k < 60 && found < 2; ++k) {
         const float* m = blk + size_t(base + 3 * k) * 4;
         float d = m[0] * (m[5] * m[10] - m[6] * m[9]) - m[1] * (m[4] * m[10] - m[6] * m[8]) +
                   m[2] * (m[4] * m[9] - m[5] * m[8]);
-        for (float want : det)
+        for (float want : she.det)
             if (want > 0 && std::fabs(d - want) < 0.005f * want) {
                 slots[found++] = k;
                 break;
             }
     }
-    if (!found) {
-        g_waveNoSlot.fetch_add(1, std::memory_order_relaxed);
-        return;
-    }
+    if (!found) return false;
     if (found == 1) slots[1] = slots[0];
     LARGE_INTEGER t;
     QueryPerformanceCounter(&t);
@@ -625,6 +643,59 @@ void waveBind(UINT start, UINT n, ID3D11Buffer* const* b, const UINT* first, con
     std::memcpy(&v[3], &phase, 4);
     std::memcpy(row3, v, 16);
     g_waveTagged.fetch_add(1, std::memory_order_relaxed);
+    g_waveActor.store(she.actor, std::memory_order_relaxed);
+    return true;
+}
+
+// Before the game's Unmap of a big constant buffer on a deferred context (its writes are done, the runtime
+// copies it next): each 256-byte block that looks like a Sim's bone block (row 3 = 0 0 0 1) placed within
+// 0.3 m of her is tried with both bone bases the patched shaders use. Blocks already tried and unchanged are
+// skipped; the key holds her bone rows too (0.12.3 keyed on the world matrix only, so her hair and clothes
+// blocks, which never have her breast bones, blocked the slots her body block came to later: 126 tags).
+struct WaveSeen {
+    float key[256][4];
+};
+thread_local std::unordered_map<const void*, WaveSeen> t_waveSeen;
+std::atomic<bool> g_waveOff{false};        // the safety switch: the scan cost too much frame time
+std::atomic<long long> g_waveScanTicks{0};  // QPC ticks spent scanning since the last log line
+void waveScan(const void* r, void* data, UINT size) {
+    if (g_waveOff.load(std::memory_order_relaxed)) return;
+    if (!data || size < 4096 || size > 65536 || !writable(data, size)) return;
+    LARGE_INTEGER t0, t1;
+    QueryPerformanceCounter(&t0);
+    WaveTarget she;
+    if (waveTarget(she)) {
+        WaveSeen& seen = t_waveSeen[r];
+        for (UINT at = 0; at + 64 <= size; at += 256) {
+            float* blk = reinterpret_cast<float*>(static_cast<unsigned char*>(data) + at);
+            const float* row3 = blk + 12;
+            if (!(row3[0] == 0.f && row3[1] == 0.f && row3[2] == 0.f && row3[3] == 1.f)) continue;
+            float dx = blk[3] - she.pos[0], dy = blk[7] - she.pos[1], dz = blk[11] - she.pos[2];
+            if (dx * dx + dy * dy + dz * dz >= 0.3f * 0.3f) continue;
+            g_waveNoSim.fetch_add(1, std::memory_order_relaxed);  // blocks of hers looked at
+            float* key = seen.key[at / 256];
+            float now[4] = {blk[3], blk[0], at + 128 <= size ? blk[16] : 0.f, at + 256 <= size ? blk[52] : 0.f};
+            if (std::memcmp(key, now, sizeof now) == 0) continue;  // the same block as last time: already tried
+            std::memcpy(key, now, sizeof now);
+            bool tagged = false;
+            for (unsigned base : {4u, 8u})
+                if (!tagged && at + size_t(base + 180) * 16 <= size) tagged = waveTag(blk, base, she);
+            if (tagged) key[0] = std::nanf("");  // the game rewriting it (row 3 back to 0 0 0 1) is looked at again
+        }
+    }
+    QueryPerformanceCounter(&t1);
+    g_waveScanTicks.fetch_add(t1.QuadPart - t0.QuadPart);
+    // Safety switch: over 3% of the time (30 ms a second) in this scan, averaged over 2 s: the wave goes off.
+    static std::atomic<long long> windowStart{0}, windowTicks{0};
+    long long start = windowStart.load();
+    if (!start) windowStart.compare_exchange_strong(start, t1.QuadPart);
+    windowTicks.fetch_add(t1.QuadPart - t0.QuadPart);
+    if (t1.QuadPart - windowStart.load() > static_cast<long long>(2 * g_qpcHz)) {
+        double ms = windowTicks.exchange(0) * 1000.0 / g_qpcHz;
+        windowStart.store(t1.QuadPart);
+        if (ms > 60 && !g_waveOff.exchange(true))
+            g_log("GPU probe: wave OFF (safety): its check took %.0f ms in 2 s, too much of the game's time", ms);
+    }
 }
 
 // Mode 5, under g_capMutex, right after the game's Unmap (its writes are done; nothing bound yet).
@@ -663,7 +734,7 @@ struct UploadDetours {
             if (r && SUCCEEDED(hr) && out &&
                 (type == D3D11_MAP_WRITE_DISCARD || type == D3D11_MAP_WRITE_NO_OVERWRITE) &&
                 c->GetType() == D3D11_DEVICE_CONTEXT_DEFERRED && cbInfo(r, &desc) && desc.ByteWidth >= 4096)
-                t_mapped[r] = out->pData;
+                t_mapped[r] = Mapped{out->pData, desc.ByteWidth};
             return hr;
         }
         if (!g_capOn.load(std::memory_order_relaxed) || !r || FAILED(hr) || !out) return hr;
@@ -687,6 +758,10 @@ struct UploadDetours {
         return hr;
     }
     static void STDMETHODCALLTYPE onUnmap(ID3D11DeviceContext* c, ID3D11Resource* r, UINT sub) {
+        if (g_mode == 6 && r) {
+            auto at = t_mapped.find(r);
+            if (at != t_mapped.end()) waveScan(r, at->second.data, at->second.size);
+        }
         unmap(c, r, sub);
         if (g_mode >= 4 && g_capOn.load(std::memory_order_relaxed)) {
             std::lock_guard<std::mutex> lock(g_capMutex);
@@ -982,10 +1057,10 @@ void waveSim(const void* actor, const float pos[3], float detL, float detR, floa
     static std::atomic<ULONGLONG> next{0};
     ULONGLONG due = next.load();
     if (now >= due && next.compare_exchange_strong(due, now + 30000))
-        g_log("GPU probe: wave: %u shaders patched, %u refused by the device; %u binds, %u blocks tagged, %u no Sim "
-              "near, %u no breast slot",
+        g_log("GPU probe: wave: %u shaders patched, %u refused by the device; %u binds, %u blocks tagged, %u "
+              "(blocks of hers looked at), %u binds carried the tag, %.1f ms scanning; last waved Sim %p",
               g_wavePatched.load(), g_waveRefused.load(), g_waveBinds.load(), g_waveTagged.load(), g_waveNoSim.load(),
-              g_waveNoSlot.load());
+              g_waveSeen.load(), g_waveScanTicks.exchange(0) * 1000.0 / g_qpcHz, g_waveActor.load());
 }
 
 void simFrame(const void* data, unsigned size) {
@@ -1044,7 +1119,7 @@ void start(const std::wstring& folder, Log log, int mode) {
     g_log(mode == 3   ? "GPU probe: bone palette read on the CPU (5 windows of 20 frames, Sim body shaders only)"
           : mode == 4 ? "GPU probe: upload order stats (5 windows of 20 frames, Sim body shaders only, writes nothing)"
           : mode == 5 ? "GPU probe: unmap guess stats (5 windows of 20 frames, Sim body shaders only, writes nothing)"
-          : mode == 6 ? "GPU probe: BREAST WAVE TEST (patched skinned shaders, fixed 1.2 cm wave, nearest woman only)"
+          : mode == 6 ? "GPU probe: BREAST WAVE TEST (patched skinned shaders, fixed 3 cm in-and-out wave, nearest woman only)"
                       : "GPU probe: on (read-only: it only logs how Sims are drawn)");
 }
 
