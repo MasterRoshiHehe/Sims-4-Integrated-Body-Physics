@@ -3,6 +3,7 @@ integratedbodyphysics.dll (shipped empty so MO2 keeps it in the mod's own folder
 - gravity: Sim id -> her nude breast gravity (the Gravity presets, 0..1)
 - apart: Sim id -> how much wider the gap between her breasts is, metres (Spacing presets)
 - cup: Sim id -> her size preset (0 Small, 1 Medium, 2 Bigger, 3 Huge; absent = from her CAS size)
+- enhanced: Sim ids whose breasts are enhanced (implants: the Enhanced presets); absent = natural
 - nude_parts / clothed_parts: CAS part ids of tops or full-body outfits that
   count as nude or as clothed, for every Sim ("Set as nude" / "Set as clothed").
 """
@@ -50,6 +51,7 @@ def _load():
         _migrated[0] = True
     _data.setdefault('apart', {})
     _data.setdefault('cup', {})
+    _data['enhanced'] = set(_data.get('enhanced', []))
     _data['nude_parts'] = set(_data.get('nude_parts', []))
     _data['clothed_parts'] = set(_data.get('clothed_parts', []))
     if _migrated[0]:
@@ -66,7 +68,7 @@ def _save():
     if not path:
         return
     d = _load()
-    out = {'gravity_scale': 2, 'gravity': d['gravity'], 'apart': d['apart'], 'cup': d['cup'], 'nude_parts': sorted(d['nude_parts']), 'clothed_parts': sorted(d['clothed_parts'])}
+    out = {'gravity_scale': 2, 'gravity': d['gravity'], 'apart': d['apart'], 'cup': d['cup'], 'enhanced': sorted(d['enhanced']), 'nude_parts': sorted(d['nude_parts']), 'clothed_parts': sorted(d['clothed_parts'])}
     with open(path, 'w') as f:
         json.dump(out, f, indent=1)
 
@@ -109,6 +111,19 @@ def set_cup(sim_id, value):
         _load()['cup'].pop(str(sim_id), None)
     else:
         _load()['cup'][str(sim_id)] = value
+    _save()
+
+
+def enhanced(sim_id):
+    """True: her breasts are enhanced (implants)."""
+    return str(sim_id) in _load()['enhanced']
+
+
+def set_enhanced(sim_id, value):
+    if value:
+        _load()['enhanced'].add(str(sim_id))
+    else:
+        _load()['enhanced'].discard(str(sim_id))
     _save()
 
 

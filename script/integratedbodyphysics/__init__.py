@@ -168,13 +168,15 @@ def _records():
                 out.append(struct.pack(RECORD, sim.id, 0.0, 0.0, 1, NAN, NAN, -1))
             continue
         seen.append('{} {}'.format(age, frame))
-        breasts = 1.0
         clothed = _clothed(info)
+        from integratedbodyphysics import clothing
+        breasts, butt_scale = clothing.factors(_mod, info, clothed, _log)
         seen[-1] += {0: ' nude', 2: ' top on', 4: ' bottom on', 6: ' dressed'}[clothed]
         gravity = store.gravity(info.sim_id)
         apart = store.apart(info.sim_id)
         cup = store.cup(info.sim_id)
-        out.append(struct.pack(RECORD, sim.id, breasts, 1.0, own | clothed, NAN if gravity is None else gravity,
+        enhanced = 8 if store.enhanced(info.sim_id) else 0
+        out.append(struct.pack(RECORD, sim.id, breasts, butt_scale, own | clothed | enhanced, NAN if gravity is None else gravity,
                                NAN if apart is None else apart, -1 if cup is None else cup))
         if len(out) >= 96:
             break

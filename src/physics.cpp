@@ -142,6 +142,12 @@ struct World {
     Vec3 grabOffset[kBones];  // ball minus your palm when it closed
     bool wasGrip[2] = {};
     Vec3 squish[kBones];  // how much each ball is pressed (Sim frame)
+    float noiseT = 0;     // idle noise clock (seconds, scaled by the speed setting)
+    uint32_t seed = 0;    // per Sim
+    float kickIn[kBones] = {};  // seconds to the next walking kick
+    float speed[kBones] = {};   // how fast she moves (m/s, smoothed)
+    Vec3 lastRoot = Vec3::sZero();
+    bool haveRoot = false;
 };
 World g_world[kSlots];
 
@@ -149,6 +155,24 @@ Vec3 vec(const float* f) { return Vec3(f[0], f[1], f[2]); }
 Quat quat(const float* f) {
     Quat q(f[0], f[1], f[2], f[3]);
     return q.LengthSq() > 1e-6f ? q.Normalized() : Quat::sIdentity();
+}
+
+// Smooth 1D gradient noise (Perlin) and a three-octave sum, -1..1. Seeded by an offset.
+float hash01(uint32_t n) {
+    n = (n << 13) ^ n;
+    return 1.0f - float((n * (n * n * 15731u + 789221u) + 1376312589u) & 0x7fffffffu) / 1073741824.0f;
+}
+float perlin(float x, uint32_t seed) {
+    float fl = std::floor(x);
+    uint32_t i = uint32_t(int(fl)) * 2654435761u + seed;
+    float f = x - fl;
+    float g0 = hash01(i), g1 = hash01(i + 2654435761u);
+    float u = f * f * f * (f * (f * 6 - 15) + 10);
+    float a = g0 * f, b = g1 * (f - 1);
+    return (a + (b - a) * u) * 2;
+}
+float noise3(float x, uint32_t seed) {
+    return 0.57f * perlin(x, seed) + 0.29f * perlin(x * 2.1f + 7.3f, seed + 1) + 0.14f * perlin(x * 4.3f + 3.1f, seed + 2);
 }
 
 constexpr float kMinRadius = 0.01f, kMaxRadius = 0.15f;
@@ -310,6 +334,7 @@ void stepSlot(int i, ULONGLONG now, const Params& p, float dt) {
         if (w.actor || w.made) destroy(w);
         if (!have) return;
         w.actor = s.in.actor;
+        w.seed = uint32_t(reinterpret_cast<uintptr_t>(s.in.actor) >> 4) * 2246822519u + uint32_t(i) * 3266489917u;
     }
     const Input& in = s.in;
     BodyInterface& bi = g_system->GetBodyInterfaceNoLock();
@@ -328,6 +353,20 @@ void stepSlot(int i, ULONGLONG now, const Params& p, float dt) {
         closing[h] = grip && !w.wasGrip[h];
         w.wasGrip[h] = grip;
     }
+    // Root motion (like naelstrof's JigglePhysics "ignore root motion"): a share of her whole body gliding
+    // (routing, VR stick walking, elevators) carries the balls along instead of swinging them; steps and
+    // body movement still jiggle them.
+    {
+        Vec3 root = vec(in.root);
+        Vec3 delta = w.haveRoot ? root - w.lastRoot : Vec3::sZero();
+        w.lastRoot = root;
+        w.haveRoot = true;
+        float k = std::clamp(p.ignoreRoot, 0.0f, 1.0f);
+        if (k > 0 && delta.Length() < 0.5f && delta.LengthSq() > 1e-10f)
+            for (int b = 0; b < kBones; ++b)
+                if (!w.ball[b].IsInvalid() && w.grabHand[b] < 0)
+                    bi.SetPosition(w.ball[b], bi.GetPosition(w.ball[b]) + RVec3(delta * k), EActivation::DontActivate);
+    }
     for (int b = 0; b < kBones; ++b) {
         if (in.use[b] && w.ball[b].IsInvalid()) makeSpring(w, b, in);
         if (w.ball[b].IsInvalid() || w.anchor[b].IsInvalid()) continue;
@@ -340,6 +379,10 @@ void stepSlot(int i, ULONGLONG now, const Params& p, float dt) {
             w.grabHand[b] = -1;
         } else {
             bi.MoveKinematic(w.anchor[b], RVec3(rest), q, dt);
+        }
+        {
+            float v = (rest - w.last[b]).Length() / dt;
+            w.speed[b] += (std::min(v, 8.0f) - w.speed[b]) * std::min(1.0f, dt * 10);
         }
         w.last[b] = rest;
         const float radius = ballRadius(in, b);
@@ -379,7 +422,59 @@ void stepSlot(int i, ULONGLONG now, const Params& p, float dt) {
             }
         }
 
-        const float hz = hzOf(in, b) * (w.grabHand[b] >= 0 ? 3.0f : 1.0f), damping = dampingOf(in, b);
+        // Idle noise: breathing drift on the target, slow stiffness variation, kicks while she walks.
+        float stiffMul = 1;
+        if (b < 2 && w.spring[b] && w.grabHand[b] < 0) {
+            Vec3 target = Vec3::sZero();
+            if (p.idle) {
+                const uint32_t sd = w.seed + uint32_t(b) * 977u;
+                // Breathing (user 2026-10-28 21:50Z: the old noise looked jumpy): one slow rhythm, about 13 breaths a
+                // minute, shared by both sides, its pace drifting a little; mostly up/down with a touch forward.
+                // Only very slow single-octave noise on top (no fast octaves), so it never twitches.
+                const float tt = w.noiseT;
+                const float omega = 6.2832f * 0.22f;
+                const float phase = omega * tt + 0.6f * std::sin(0.13f * omega * tt + hash01(w.seed) * 6.0f);
+                const float breath = std::sin(phase) + 0.18f * std::sin(2 * phase + 0.9f);  // in a little quicker than out
+                const float wander = perlin(tt * 0.04f, sd + 11), wanderUp = perlin(tt * 0.05f + 5, sd + 23),
+                            wanderFront = perlin(tt * 0.045f + 9, sd + 37);
+                const float amp = 0.0022f * p.idleAmp * in.size;
+                target = Vec3(wander * 0.3f * (b == 0 ? 1.0f : -1.0f), breath * 0.9f + wanderUp * 0.25f,
+                              breath * 0.45f + wanderFront * 0.2f) * amp;
+                // A very slow, tiny circling (side/front), so they are never exactly still between breaths.
+                float ang = tt * 0.25f * (b == 0 ? 1.0f : -1.0f) + hash01(sd) * 3.0f;
+                float circ = 0.0006f * p.idleCircle * in.size;
+                target += Vec3(std::cos(ang) * circ, 0, std::sin(ang) * circ);
+                // Stiffness drifts very slowly, in steps of 2% (a new value rewrites the spring every time).
+                stiffMul = 1 + std::clamp(p.idleStiff, 0.0f, 0.5f) * perlin(tt * 0.03f + 17, sd + 51)
+                           + std::clamp(p.idleSide, 0.0f, 0.3f) * hash01(sd + 91);
+                stiffMul = std::round(stiffMul * 50.0f) / 50.0f;
+                if (p.idleKick > 0 && w.speed[b] > 0.3f) {
+                    w.kickIn[b] -= dt;
+                    if (w.kickIn[b] <= 0) {
+                        w.kickIn[b] = 0.25f + 0.25f * (hash01(sd + uint32_t(w.noiseT * 120)) * 0.5f + 0.5f);
+                        Vec3 dir(hash01(sd + uint32_t(w.noiseT * 311)), hash01(sd + uint32_t(w.noiseT * 197) + 5) + 0.5f,
+                                 hash01(sd + uint32_t(w.noiseT * 89) + 9));
+                        float strength = 0.004f * p.idleKick * massOf(in, b) * std::min(w.speed[b], 3.0f) * in.size;
+                        bi.AddImpulse(w.ball[b], q * dir * strength);
+                    }
+                }
+            }
+            w.spring[b]->SetTargetPositionCS(target);
+        }
+        // Firmer at the edges (like FSMP's non-Hookean springs and soft limits): from softStart of the range on,
+        // the spring stiffens, so the ball eases into its limit instead of hitting it.
+        if (w.spring[b] && p.edgeFirm > 0 && w.grabHand[b] < 0) {
+            Vec3 off = q.Conjugated() * (Vec3(bi.GetCenterOfMassPosition(w.ball[b])) - rest);
+            float r = 0;
+            for (int x = 0; x < 3; ++x) {
+                float range = off[x] >= 0 ? w.curHi[b][x] : -w.curLo[b][x];
+                if (range > 1e-5f) r = std::max(r, std::fabs(off[x]) / range);
+            }
+            float start = std::clamp(p.softStart, 0.2f, 0.99f);
+            float ramp = std::clamp((r - start) / (1 - start), 0.0f, 1.0f);
+            stiffMul *= 1 + std::clamp(p.edgeFirm, 0.0f, 3.0f) * ramp * ramp;
+        }
+        const float hz = hzOf(in, b) * stiffMul * (w.grabHand[b] >= 0 ? 3.0f : 1.0f), damping = dampingOf(in, b);
         const float force = springForce(in, b, w.grabHand[b] >= 0);
         if (w.spring[b] && (w.appliedHz[b] != hz || w.appliedDamping[b] != damping || w.appliedForce[b] != force)) {
             for (SixDOFConstraintSettings::EAxis axis : {SixDOFConstraintSettings::TranslationX,
@@ -488,6 +583,7 @@ void stepSlot(int i, ULONGLONG now, const Params& p, float dt) {
         else
             bi.MoveKinematic(w.part[k], centre, rot, dt);
     }
+    w.noiseT += dt * std::clamp(p.idleSpeed, 0.1f, 4.0f);
     if (!w.made) {
         w.made = true;
         if (g_logs.fetch_add(1) < 10)

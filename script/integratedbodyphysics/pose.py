@@ -11,8 +11,14 @@ mixers (autonomy, other Sims' socials, situations, your picks).
 - Dance: the game's solo dance (base-game dance moves; the first one found of
   a few packs' solo dance interactions, no stereo needed). Lots of arm moves
   across the chest, for the arm collision.
-- Stretch: the game's Stretch (base game): bends and arm stretches.
+- Stretch: the game's DoStretching clip (base game, animation 75905) replayed over Neutral like Jump/Jog (the interaction
+  itself ends after 2-4 s and route-fails when pushed again; 2026-10-29).
 No jumping jacks in the game outside the TV workout (which needs a TV).
+- Jump in place / Jog in place (user 2026-10-28 20:50Z: watch the jiggle live): the Fitness Stuff pack's
+  workout video clips (animation tuning 164942 Hop, 164941 Jog, ASM WorkoutVideos_PowerSculpt_Actions; only
+  ever played inside the TV workout situation as one-shot mixers). Nothing in the game loops a jump on its
+  own, so she is held in Neutral and the clip is played again by script as soon as it ends (_clip_loop,
+  the same arb path as animation_element.animate_states). Needs Fitness Stuff (SP11); not in the menu otherwise.
 
 0.11.7 (user 2026-10-16 12:47Z: the pose didn't stop the NPC dead, she
 picked up a new schedule and left). Checked against the game's 1.121 Python:
@@ -34,7 +40,8 @@ NEUTRAL = (23835,)  # sim-standExclusive
 DANCE = (218814, 115844, 293115)  # si_BehaviorBomb_Reactions_SoloDance (EP08), si_solo_SatelliteDishHiveMind_Dance (EP01), sI_HighSchoolFestival_SoloDance (EP12)
 STRETCH = (96787,)  # sim_doStretching
 
-POSES = (('Neutral', NEUTRAL), ('Dance', DANCE), ('Stretch', STRETCH))
+POSES = (('Neutral', NEUTRAL), ('Dance', DANCE))
+CLIPS = (('Stretch', 75905), ('Jump in place', 164942), ('Jog in place', 164941))  # name, animation tuning (workout_Videos_PowerSculpt_Hop / _Jog)
 
 _held = {}  # sim id -> affordance
 _current = 0  # the frozen Sim's id, 0 = none
@@ -45,6 +52,8 @@ _wrapped = False
 _leave_wrapped = False
 RESET_AFTER = 1.0  # s: still walked this long after the hold started: the game's reset
 _logs = 0
+_clips = {}  # sim id -> {'name', 'id' (animation tuning), 'token', 'running', 'fails'}: a clip played again and again on top of Neutral
+CLIP_MAX_FAILS = 6
 
 
 def _log(text):
@@ -88,7 +97,17 @@ def _push(sim, aff, stop_others):
                 pass
     context = InteractionContext(sim, InteractionContext.SOURCE_SCRIPT_WITH_USER_INTENT, Priority.Critical,
                                  insert_strategy=QueueInsertStrategy.NEXT)
-    return sim.push_super_affordance(aff, sim, context)
+    result = sim.push_super_affordance(aff, sim, context)
+    try:
+        if not result:  # her own tests refused (Stretch wants a buff or trait): she is held anyway, so the tests are skipped
+            from interactions.aop import AffordanceObjectPair
+            aop = AffordanceObjectPair(aff, sim, aff, None)
+            again = aop.execute(context)
+            _log('{}: {} refused ({}); run without its tests -> {}'.format(sim, aff.__name__, result, again))
+            return again
+    except Exception as e:
+        _log('{}: running {} without its tests failed: {!r}'.format(sim, aff.__name__, e))
+    return result
 
 
 def _stop_running(sim, aff):
@@ -148,7 +167,125 @@ def _reset(sim, why):
         return False
 
 
+def clip_available(clip_id):
+    import services
+    import sims4.resources
+    return services.get_instance_manager(sims4.resources.Types.ANIMATION).get(clip_id) is not None
+
+
+def clip_name(sim):
+    c = _clips.get(sim.sim_info.sim_id)
+    return c['name'] if c is not None else None
+
+
+def hold_clip(sim, name):
+    """Neutral hold plus a clip that plays again as soon as it ends."""
+    clip_id = dict(CLIPS).get(name)
+    if clip_id is None or not clip_available(clip_id):
+        _log('{}: no {} clip in this game (needs Fitness Stuff)'.format(sim, name))
+        return
+    hold(sim, NEUTRAL, name)
+    if holding(sim):
+        _clips[sim.sim_info.sim_id] = {'name': name, 'id': clip_id, 'token': object(), 'running': False, 'fails': 0}
+        _start_clip(sim.sim_info.sim_id)
+
+
+def _held_si(sim, aff):
+    try:
+        for si in sim.si_state:
+            if si.affordance is aff and not getattr(si, 'is_finishing', False):
+                return si
+    except Exception:
+        pass
+    return None
+
+
+def _clip_cycle(sim, si, elem):
+    """One play of the clip, the game's own way (animation_element.animate_states): asm from the held interaction
+    (or made directly when the interaction won't give one), request the begin states into an arb, run it and wait
+    for it to end. Returns (element or None, why not)."""
+    import element_utils
+    from animation.animation_utils import create_run_animation, flush_all_animations
+    from animation.arb import Arb
+    asm = None
+    why = ''
+    try:
+        asm = si.get_asm(elem.asm_key, elem.actor_name, elem.target_name, elem.carry_target_name, use_cache=False,
+                         create_target_name=elem.create_target_name, base_object_name=elem.base_object_name,
+                         custom_part_owner_actor_name=elem.custom_part_owner_actor_name)
+        if asm is None:
+            why = 'get_asm gave none; '
+    except Exception as e:
+        why = 'get_asm failed {!r}; '.format(e)
+    if asm is None:
+        try:
+            from animation.asm import create_asm
+            asm = create_asm(elem.asm_key, si.animation_context)
+            if not asm.set_actor(elem.actor_name or 'x', sim):
+                return None, why + 'set_actor refused'
+        except Exception as e:
+            return None, why + 'direct asm failed {!r}'.format(e)
+    arb = Arb()
+    try:
+        if asm.current_state == 'exit':
+            asm.set_current_state('entry')
+        for state in elem.begin_states:
+            if not asm.request(state, arb, interaction=si):
+                return None, why + 'request {} refused'.format(state)
+    except Exception as e:
+        return None, why + 'request failed {!r}'.format(e)
+    if arb.empty:
+        return None, why + 'arb empty'
+    return element_utils.build_critical_section(create_run_animation(arb), flush_all_animations), why
+
+
+def _start_clip(sim_id):
+    c = _clips.get(sim_id)
+    if c is None or c['running']:
+        return
+    import elements
+    import services
+    import sims4.resources
+    token = c['token']
+    c['running'] = True
+
+    def gen(timeline):
+        import element_utils
+        try:
+            manager = services.get_instance_manager(sims4.resources.Types.ANIMATION)
+            elem = manager.get(c['id'])
+            plays = 0
+            while _clips.get(sim_id) is not None and _clips[sim_id]['token'] is token and elem is not None:
+                info = services.sim_info_manager().get(sim_id)
+                sim = info.get_sim_instance() if info is not None else None
+                aff = _held.get(sim_id)
+                si = _held_si(sim, aff) if sim is not None and aff is not None else None
+                if si is None:
+                    break  # the pose is not running (yet): tick() starts the loop again
+                sequence, why = _clip_cycle(sim, si, elem)
+                if sequence is None:
+                    c['fails'] += 1
+                    _log('{}: {} clip had nothing to play: {}'.format(sim, c['name'], why))
+                    break
+                if plays == 0 and why:
+                    _log('{}: {} clip: {}played via a direct asm'.format(sim, c['name'], why))
+                yield from element_utils.run_child(timeline, sequence)
+                plays += 1
+                if plays == 1:
+                    _log('{}: {} clip plays'.format(sim, c['name']))
+        except Exception as e:
+            c['fails'] += 1
+            _log('{} clip failed: {!r}'.format(c['name'], e))
+        finally:
+            c['running'] = False
+        if False:
+            yield None
+
+    services.time_service().sim_timeline.schedule(elements.GeneratorElement(gen))
+
+
 def hold(sim, ids, name):
+    _clips.pop(sim.sim_info.sim_id, None)  # a plain pose ends a clip (the loop sees its token gone)
     aff = affordance(ids)
     if aff is None:
         _log('{}: no {} interaction in this game'.format(sim, name))
@@ -156,10 +293,15 @@ def hold(sim, ids, name):
     wrap_queue()
     wrap_leaving()
     sim_id = sim.sim_info.sim_id
+    before = _held.get(sim_id)
     _held[sim_id] = aff
     _since[sim_id] = time.monotonic()
     _reset_done.discard(sim_id)
     _stop_running(sim, aff)
+    if before is not None and before is not aff and before is not affordance(NEUTRAL) and not _with_you(sim):
+        # leaving a dance / stretch: cancelling didn't stop the dance (user 2026-10-28 22:40), the game's reset does
+        _reset_done.add(sim_id)
+        _reset(sim, 'Integrated Body Physics pose: leaving {}'.format(getattr(before, '__name__', before)))
     result = _push(sim, aff, True)
     _log('{}: {} ({}) -> {}'.format(sim, name, aff.__name__, result))
 
@@ -205,6 +347,7 @@ def release(sim):
     if _current == sim_id:
         _set_current(0)
     _held.pop(sim_id, None)
+    _clips.pop(sim_id, None)
     _since.pop(sim_id, None)
     _reset_done.discard(sim_id)
     _log('{}: let go'.format(sim))
@@ -241,6 +384,7 @@ def tick():
             if _current == sim_id:
                 _set_current(0)
             _held.pop(sim_id, None)
+            _clips.pop(sim_id, None)
             _since.pop(sim_id, None)
             _leave_later.pop(sim_id, None)
             continue
@@ -254,6 +398,13 @@ def tick():
                 _push(sim, aff, False)
             except Exception as e:
                 _log('{}: push again failed: {!r}'.format(sim, e))
+        c = _clips.get(sim_id)
+        if c is not None and not c['running'] and c['fails'] < CLIP_MAX_FAILS and _running(sim, aff):
+            try:
+                _start_clip(sim_id)
+            except Exception as e:
+                c['fails'] += 1
+                _log('{}: starting the {} clip failed: {!r}'.format(sim, c['name'], e))
 
 
 def _allowed(interaction, aff):

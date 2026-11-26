@@ -21,6 +21,7 @@ struct Input {
     float a[kParts][3], b[kParts][3];  // arm capsule ends (world)
     bool part[kParts] = {};
     float size = 1;            // the Sim's scale (adults 1)
+    float root[3] = {};        // the Sim's world position (her root)
     // This Sim's own values per bone (her size preset, clothed or not), adult metres.
     float hz[kBones] = {}, damping[kBones] = {};
     float lo[kBones][3] = {}, hi[kBones][3] = {};  // how far each ball may move (Sim frame: below/above 0 per axis)
@@ -37,6 +38,18 @@ struct Params {
     float armSize = 1;     // arm capsule thickness scale
     bool grab = true;      // your closed hand holds a ball it closed on
     float grabReach = 0.12f;  // metres a held ball may be pulled from its rest place
+    // Idle noise (a layer on top of the springs, breasts only): slow coherent noise on the spring's target
+    // (breathing), on its stiffness, and tiny random kicks while the Sim walks.
+    float edgeFirm = 0.5f;    // bounce speed rises up to this much times near the end of the range (0 = off)
+    float softStart = 0.6f;   // where in the range (0..1) it starts to firm up
+    float ignoreRoot = 0.5f;  // share of the Sim's own root gliding that the balls simply follow (0 = all of it jiggles them)
+    bool idle = true;
+    float idleAmp = 1.0f;     // breathing scale (1 = about 2 mm up and down)
+    float idleSpeed = 1.0f;   // breathing speed scale (1 = about 13 breaths a minute)
+    float idleStiff = 0.1f;   // stiffness varies by this fraction (0 = off)
+    float idleSide = 0.05f;   // each side's stiffness differs by up to this fraction (fixed per Sim)
+    float idleCircle = 1.0f;  // slow circular drift (side to side and front to back), scale
+    float idleKick = 1.0f;    // walking kick scale (0 = off)
 };
 
 bool start(const Params& params);  // false: no Jolt (the built-in springs stay in use)

@@ -17,6 +17,7 @@
 
 #include <atomic>
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdarg>
 #include <cstdint>
@@ -24,6 +25,7 @@
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include "gpuprobe.h"
 #include "physics.h"
@@ -71,13 +73,13 @@ Value g_values[] = {
     {"own", 1, {1}},                 // your own (the active) Sim jiggles
     {"others", 1, {1}},              // other Sims jiggle
     {"butt", 1, {1}},                // the butt bones
-    {"butt_hz", 4.0f, {4.0f}},
-    {"butt_damping", 0.3f, {0.3f}},
-    {"butt_max", 0.02f, {0.02f}},
+    {"butt_hz", 3.0f, {3.0f}},
+    {"butt_damping", 0.15f, {0.15f}},
+    {"butt_max", 0.03f, {0.03f}},
     {"with_rtbp", 0, {0}},  // run even when RTBP's d3d11.dll is loaded
     {"butt_up", 1, {1}},
-    {"butt_side", 1, {1}},
-    {"butt_front", 1, {1}},
+    {"butt_side", 1.17f, {1.17f}},
+    {"butt_front", 0.67f, {0.67f}},
     {"butt_gravity", 0, {0}},
     {"butt_size", 0.05f, {0.05f}},
     {"arm_push", 1, {1}},  // arms and hands push them
@@ -90,7 +92,7 @@ Value g_values[] = {
     {"butt_clothed_hz", 1.3f, {1.3f}},
     {"butt_clothed_damping", 1.5f, {1.5f}},
     {"butt_clothed_gravity", 0, {0}},
-    {"outfit_pie", 1, {1}},  // women's pie menus get outfit changes and Nude (testing)
+    {"outfit_pie", 0, {0}},  // women's pie menus get the Body Physics submenu (outfit, Nude, Cup size, Freeze ...); off by default (user 2026-10-29)
     {"your_hands", 1, {1}},  // your Sim's hands and arms (the VR hands) push other Sims' breasts
     // Holding (user 2026-10-15 03:54Z): closing your VR hand on a breast holds it until you open it.
     {"grab", 1, {1}},
@@ -102,11 +104,11 @@ Value g_values[] = {
     {"cup_bigger_at", 2.1f, {2.1f}},
     {"cup_huge_at", 2.5f, {2.5f}},
     // A wall down her middle (user 2026-10-15 04:12Z): pushed together, the breasts press into it, not into each other.
-    {"middle_wall", 0, {0}},
+    {"middle_wall", 1, {1}},
     // 0.11.4 (user 06:03Z: "extremely glitchy now"): the 0.11 effects start off, to be turned on one at a time.
-    {"swing_on", 0, {0}},
-    {"squish_on", 0, {0}},
-    {"weight_on", 0, {0}},
+    {"swing_on", 1, {1}},
+    {"squish_on", 1, {1}},
+    {"weight_on", 1, {1}},
     // Set to 1 (the debug menu's "Scale the others from <size>", after its are-you-sure): the other three sizes
     // become that size scaled the way the factory presets differ. Never stays 1, never saved as 1.
     // (user 2026-10-16 12:04Z: the same button on every size's page, not just Medium's)
@@ -124,13 +126,47 @@ Value g_values[] = {
     // 1 at game start: the read-only GPU probe logs how the game draws Sims (gpuprobe.cpp; research for the
     // bulge, wave and butt shader features, user 2026-10-16 19:14Z). Changes no drawing.
     {"shader_probe", 0, {0}},
+    // Idle noise layer (user 2026-10-28): breathing drift, stiffness variation and walking kicks on the breasts.
+    {"idle_on", 1, {1}},
+    {"idle_amp", 1, {1}},
+    {"idle_speed", 1, {1}},
+    {"idle_stiff", 0.1f, {0.1f}},
+    {"idle_kick", 1, {1}},
+    {"idle_side", 0.05f, {0.05f}},
+    {"idle_circle", 1, {1}},
+    {"edge_firm", 0.5f, {0.5f}},   // bounce speed rises toward the end of the range (0 = off)
+    {"soft_start", 0.6f, {0.6f}},  // where in the range (0..1) that starts
+    {"ignore_root", 0.5f, {0.5f}},  // share of her whole-body gliding the balls just follow (0 = all of it swings them)
+    {"stretch", 0.3f, {0.3f}},      // breasts lengthen along their movement, volume kept (0 = off)
+    {"cloth_on", 1, {1}},  // Clothing affects jiggle (clothing.py; the game's CAS tags)
+    {"cloth_scale", 1, {1}},
+    {"cloth_fabric", 1, {1}},
+    {"cloth_swim", 1.6f, {1.6f}},
+    {"cloth_underwear", 1.4f, {1.4f}},
+    {"cloth_light", 1, {1}},
+    {"cloth_tube", 1.2f, {1.2f}},  // tube / crop / halter / corset / bodysuit (from part names only)
+    {"cloth_names", 1, {1}},       // use part names (integratedbodyphysics_garments.tsv) over the tags
+    {"cloth_dress", 0.8f, {0.8f}},
+    {"cloth_heavy", 0.55f, {0.55f}},
+    {"cloth_outer", 0.3f, {0.3f}},
+    {"cloth_other", 0.8f, {0.8f}},
+    {"cloth_unknown", 1, {1}},
+    {"cloth_swim_bottom", 1.5f, {1.5f}},
+    {"cloth_underwear_bottom", 1.4f, {1.4f}},
+    {"cloth_skirt", 1.15f, {1.15f}},
+    {"cloth_pants", 0.8f, {0.8f}},
+    // Presets (user 2026-10-28): 1 = do it. save/load the preset file; reset = the built-in defaults.
+    {"preset_save", 0, {0}},
+    {"preset_load", 0, {0}},
+    {"preset_reset", 0, {0}},
+    {"preset_ui", 0, {0}},  // any press: the script opens the Presets picker (list, save under a name, load, delete)
 };
 enum {
     kOn, kOwn, kOthers, kButt, kButtHz, kButtDamping, kButtMax, kWithRtbp, kButtUp, kButtSide, kButtFront, kButtGravity,
     kButtSize, kArmPush, kArmSize, kBreastsOn, kButtOn, kBreastDistance, kButtDistance, kButtClothedStrength,
     kButtClothedHz, kButtClothedDamping, kButtClothedGravity, kOutfitPie, kYourHands, kGrab, kGrabReach, kGrabPress,
     kSizeMediumAt, kSizeBiggerAt, kSizeHugeAt, kBreastWall, kSwingOn, kSquishOn, kWeightOn, kScaleFromSmall, kScaleFromMedium,
-    kScaleFromBigger, kScaleFromHuge, kBreastGrabCurl, kButtGrabCurl, kMenuKey, kShaderProbe, kValues
+    kScaleFromBigger, kScaleFromHuge, kBreastGrabCurl, kButtGrabCurl, kMenuKey, kShaderProbe, kIdleOn, kIdleAmp, kIdleSpeed, kIdleStiff, kIdleKick, kIdleSide, kIdleCircle, kEdgeFirm, kSoftStart, kIgnoreRoot, kStretch, kClothOn, kClothScale, kClothFabric, kClothSwim, kClothUnderwear, kClothLight, kClothTube, kClothNames, kClothDress, kClothHeavy, kClothOuter, kClothOther, kClothUnknown, kClothSwimBottom, kClothUnderwearBottom, kClothSkirt, kClothPants, kPresetSave, kPresetLoad, kPresetReset, kPresetUi, kValues
 };
 static_assert(sizeof(g_values) / sizeof(g_values[0]) == kValues, "g_values and its enum differ");
 float val(int i) { return g_values[i].v.load(std::memory_order_relaxed); }
@@ -147,15 +183,15 @@ struct Field {
 };
 const Field kFields[] = {
     {"strength", "breasts", {1.2f, 1.5f, 1.7f, 1.9f}},  // 1 = the physical spring
-    {"hz", "breast_hz", {3.8f, 3.0f, 2.6f, 2.2f}},       // how fast they swing back
-    {"damping", "breast_damping", {0.3f, 0.2f, 0.17f, 0.15f}},  // 0 = never settles, 1 = no swing past rest
-    {"max_up", "breast_max", {0.02f, 0.03f, 0.04f, 0.05f}},     // metres they may move up (adult size)
-    {"max_down", "breast_max", {0.025f, 0.04f, 0.05f, 0.065f}},  // down
-    {"max_side", "breast_max", {0.02f, 0.03f, 0.04f, 0.05f}},   // to each side
-    {"max_front", "breast_max", {0.015f, 0.025f, 0.03f, 0.04f}},  // forward and back
+    {"hz", "breast_hz", {4.0f, 3.2f, 2.7f, 2.3f}},       // how fast they swing back
+    {"damping", "breast_damping", {0.16f, 0.12f, 0.10f, 0.09f}},  // 0 = never settles, 1 = no swing past rest
+    {"max_up", "breast_max", {0.03f, 0.04f, 0.05f, 0.06f}},     // metres they may move up (adult size)
+    {"max_down", "breast_max", {0.035f, 0.045f, 0.055f, 0.065f}},  // down
+    {"max_side", "breast_max", {0.03f, 0.04f, 0.05f, 0.06f}},   // to each side
+    {"max_front", "breast_max", {0.012f, 0.015f, 0.02f, 0.025f}},  // forward and back
     {"up", "breast_up", {1, 1, 1, 1}},  // each direction's share of the movement, in the Sim's frame
     {"side", "breast_side", {1, 1, 1, 1}},
-    {"front", "breast_front", {1, 1, 1, 1}},
+    {"front", "breast_front", {0.3f, 0.3f, 0.3f, 0.3f}},
     {"gravity", "breast_gravity", {0, 0, 0, 0}},  // -1..1: how much gravity pulls them (the pose already hangs them)
     {"size", "breast_size", {0.035f, 0.045f, 0.055f, 0.065f}},  // radius (metres) her own arms push against
     {"size_you", "breast_size", {0.035f, 0.045f, 0.055f, 0.065f}},  // radius your hands push against
@@ -165,10 +201,10 @@ const Field kFields[] = {
     {"scale", nullptr, {1, 1, 1, 1}},  // how big they look, times her CAS size (their pushing sizes grow with it)
     {"squish", nullptr, {0.4f, 0.5f, 0.6f, 0.7f}},  // how much they flatten where pressed (0 = never)
     // Clothed (a top covers them): strength, bounce speed and damping times these; gravity and apart added.
-    {"clothed_strength", "breast_clothed_strength", {0.6f, 0.6f, 0.6f, 0.6f}},
+    {"clothed_strength", "breast_clothed_strength", {0.5f, 0.5f, 0.5f, 0.5f}},
     {"clothed_hz", "breast_clothed_hz", {1.3f, 1.3f, 1.3f, 1.3f}},
     {"clothed_damping", "breast_clothed_damping", {1.5f, 1.5f, 1.5f, 1.5f}},
-    {"clothed_gravity", "breast_clothed_gravity", {0, 0, 0, 0}},  // below 0: the top pushes them up
+    {"clothed_gravity", "breast_clothed_gravity", {-0.1f, -0.1f, -0.1f, -0.1f}},  // below 0: the top pushes them up
     {"clothed_apart", "breast_clothed_apart", {0, 0, 0, 0}},
 };
 enum {
@@ -177,17 +213,46 @@ enum {
 };
 constexpr int kFieldCount = static_cast<int>(sizeof(kFields) / sizeof(kFields[0]));
 static_assert(kFieldCount == kFields_, "kFields and its enum differ");
-char g_presetKeys[kSizes][kFieldCount][40];
-Value g_preset[kSizes][kFieldCount];
-float pv(int size, int field) { return g_preset[size][field].v.load(std::memory_order_relaxed); }
+// Two breast kinds (user 2026-10-28): natural (rows 0..3, "<size>_breast_<field>") and enhanced / implants
+// (rows 4..7, "enh_<size>_breast_<field>"). A Sim is set enhanced from the pie, the debug menu or the phone.
+constexpr int kKinds = 2, kPresetRows = kSizes * kKinds;
+// Enhanced from natural, per field: implants move as one firmer, rounder mass. Stiffer, settle sooner, less range,
+// hardly tilt or flatten, no sag; a bra changes them less.
+struct EnhancedOf {
+    float mul, add;
+};
+const EnhancedOf kEnhanced[] = {
+    {0.6f, 0},   // strength
+    {1.6f, 0},   // hz
+    {1.8f, 0},   // damping
+    {0.5f, 0}, {0.45f, 0}, {0.5f, 0}, {0.5f, 0},  // max up, down, side, front
+    {1, 0}, {1, 0}, {1, 0},  // up, side, front shares
+    {0, 0},      // gravity: no sag
+    {1, 0}, {1, 0}, {1, 0},  // size, size_you, apart
+    {0.4f, 0},   // swing
+    {1, 0},      // weight (silicone weighs about the same as tissue)
+    {1, 0},      // scale
+    {0.35f, 0},  // squish
+    {1.2f, 0}, {1.1f, 0}, {1.2f, 0},  // clothed strength, hz, damping: a top changes them less
+    {0, 0}, {0, 0},  // clothed gravity, apart
+};
+static_assert(sizeof(kEnhanced) / sizeof(kEnhanced[0]) == kFields_, "kEnhanced and kFields differ");
+float factoryOf(int row, int f) {
+    float natural = kFields[f].factory[row % kSizes];
+    return row < kSizes ? natural : natural * kEnhanced[f].mul + kEnhanced[f].add;
+}
+char g_presetKeys[kPresetRows][kFieldCount][48];
+Value g_preset[kPresetRows][kFieldCount];
+float pv(int row, int field) { return g_preset[row][field].v.load(std::memory_order_relaxed); }
 
 void initPresets() {
-    for (int z = 0; z < kSizes; ++z)
+    for (int z = 0; z < kPresetRows; ++z)
         for (int f = 0; f < kFieldCount; ++f) {
-            std::snprintf(g_presetKeys[z][f], sizeof(g_presetKeys[z][f]), "%s_breast_%s", kSizeNames[z], kFields[f].name);
+            std::snprintf(g_presetKeys[z][f], sizeof(g_presetKeys[z][f]), "%s%s_breast_%s", z < kSizes ? "" : "enh_",
+                          kSizeNames[z % kSizes], kFields[f].name);
             g_preset[z][f].key = g_presetKeys[z][f];
-            g_preset[z][f].fallback = kFields[f].factory[z];
-            g_preset[z][f].v = kFields[f].factory[z];
+            g_preset[z][f].fallback = factoryOf(z, f);
+            g_preset[z][f].v = factoryOf(z, f);
         }
 }
 
@@ -217,7 +282,8 @@ Value* findValue(const char* key) {
 const int kSimButtKeys[] = {kButt, kButtHz, kButtDamping, kButtMax, kButtUp, kButtSide, kButtFront, kButtGravity,
                             kButtSize, kButtClothedStrength, kButtClothedHz, kButtClothedDamping, kButtClothedGravity};
 constexpr int kSimButt = static_cast<int>(sizeof(kSimButtKeys) / sizeof(kSimButtKeys[0]));
-constexpr int kSimBreastsOn = kFields_ + kSimButt, kSimButtOn = kSimBreastsOn + 1, kSimN = kSimButtOn + 1;
+constexpr int kSimBreastsOn = kFields_ + kSimButt, kSimButtOn = kSimBreastsOn + 1, kSimEnhanced = kSimButtOn + 1,
+              kSimN = kSimEnhanced + 1;
 struct SimSettings {
     std::atomic<uint64_t> id{0};
     std::atomic<float> v[kSimN];
@@ -231,7 +297,7 @@ std::atomic<int> g_currentSize{1};  // her size preset, for showing the global v
 const char* simKeyName(int i, char* buf, size_t n) {
     if (i < kFields_) std::snprintf(buf, n, "%s", kFields[i].name);
     else if (i < kSimBreastsOn) std::snprintf(buf, n, "%s", g_values[kSimButtKeys[i - kFields_]].key);
-    else std::snprintf(buf, n, "%s", i == kSimBreastsOn ? "breasts_on" : "butt_on");
+    else std::snprintf(buf, n, "%s", i == kSimBreastsOn ? "breasts_on" : i == kSimButtOn ? "butt_on" : "enhanced");
     return buf;
 }
 int simKey(const char* name) {
@@ -272,6 +338,7 @@ void initSimSettings() {
 float simGlobal(int i, int z) {
     if (i < kFields_) return g_preset[z][i].v.load(std::memory_order_relaxed);
     if (i < kSimBreastsOn) return val(kSimButtKeys[i - kFields_]);
+    if (i == kSimEnhanced) return z >= kSizes ? 1.f : 0.f;  // what she is now (pie choice), 0 natural / 1 enhanced
     return val(i == kSimBreastsOn ? kBreastsOn : kButtOn);
 }
 
@@ -285,11 +352,13 @@ bool readIni(const std::wstring& path, const char* key, float& out) {
     return true;
 }
 
+void presetReset();
 void readSettings() {
     std::wstring shipped = g_folder + L"integratedbodyphysics.ini", user = g_folder + L"integratedbodyphysics_user.ini";
+    std::wstring preset = g_folder + L"integratedbodyphysics_preset.ini";  // your saved preset: over the shipped file, under your changes
     for (Value& v : g_values) {
         float f = v.fallback;
-        for (const std::wstring* path : {&shipped, &user}) readIni(*path, v.key, f);
+        for (const std::wstring* path : {&shipped, &preset, &user}) readIni(*path, v.key, f);
         v.v = f;
     }
     // Presets: their own keys; else, the first time, the 0.10.0 single setting (what you had tuned), as the
@@ -300,12 +369,12 @@ void readSettings() {
         bool haveLegacy = false;
         if (kFields[f].legacy)
             for (const std::wstring* path : {&shipped, &user}) haveLegacy |= readIni(*path, kFields[f].legacy, legacy);
-        for (int z = 0; z < kSizes; ++z) {
+        for (int z = 0; z < kPresetRows; ++z) {
             Value& v = g_preset[z][f];
             float x = v.fallback;
             bool own = false;
-            for (const std::wstring* path : {&shipped, &user}) own |= readIni(*path, v.key, x);
-            if (!own && haveLegacy) {
+            for (const std::wstring* path : {&shipped, &preset, &user}) own |= readIni(*path, v.key, x);
+            if (!own && haveLegacy && z < kSizes) {
                 float medium = kFields[f].factory[1];
                 x = std::fabs(medium) > 1e-6f ? legacy * kFields[f].factory[z] / medium
                                               : legacy + kFields[f].factory[z] - medium;
@@ -338,6 +407,26 @@ void readSettings() {
             }
         }
         if (sims) LOG("Settings: %d Sims with their own settings", sims);
+    }
+    {  // 0.13.1: the built-in preset (tuned from a Skyrim CBPC preset, user 2026-10-28) replaces the old tuned values once
+        float version = 0;
+        readIni(user, "defaults_version", version);
+        if (version < 1) {
+            std::wstring backup = g_folder + L"integratedbodyphysics_user_before_preset.ini";
+            if (GetFileAttributesW(user.c_str()) != INVALID_FILE_ATTRIBUTES && CopyFileW(user.c_str(), backup.c_str(), TRUE))
+                LOG("Settings: your old settings are kept in integratedbodyphysics_user_before_preset.ini");
+            presetReset();
+            std::string path(user.begin(), user.end());
+            WritePrivateProfileStringA("jiggle", "defaults_version", "1", path.c_str());
+            LOG("Settings: the CBPC-based built-in preset is now active (defaults_version 1)");
+        }
+        if (version < 2) {  // 0.13.15 (user 2026-10-29): the pie menu entries are off by default, also for saved settings
+            g_values[kOutfitPie].v = 0;
+            std::string path(user.begin(), user.end());
+            WritePrivateProfileStringA("jiggle", "outfit_pie", "0", path.c_str());
+            WritePrivateProfileStringA("jiggle", "defaults_version", "2", path.c_str());
+            LOG("Settings: Body Physics in pie menus is off (defaults_version 2); turn it on in the menu");
+        }
     }
     LOG("Settings: on %.0f, medium breasts %.2f (%.1f Hz, damping %.2f, up %.3f / down %.3f m), butt %.2f",
         val(kOn), pv(1, fStrength), pv(1, fHz), pv(1, fDamping), pv(1, fMaxUp), pv(1, fMaxDown), val(kButt));
@@ -389,6 +478,16 @@ jig::phys::Params physicsParams() {
     p.armSize = val(kArmSize);
     p.grab = val(kGrab) != 0;
     p.grabReach = val(kGrabReach);
+    p.idle = val(kIdleOn) != 0;
+    p.idleAmp = val(kIdleAmp);
+    p.idleSpeed = val(kIdleSpeed);
+    p.idleStiff = val(kIdleStiff);
+    p.idleKick = val(kIdleKick);
+    p.idleSide = val(kIdleSide);
+    p.idleCircle = val(kIdleCircle);
+    p.edgeFirm = val(kEdgeFirm);
+    p.softStart = val(kSoftStart);
+    p.ignoreRoot = val(kIgnoreRoot);
     return p;
 }
 std::atomic<bool> g_physics{false};  // the Jolt world runs (else the built-in springs)
@@ -419,7 +518,7 @@ bool simGet(const char* key, float* out) {
     int i = simKey(name);
     if (i < 0) return false;
     float x = cur >= 0 ? g_simSet[cur].v[i].load() : NAN;
-    *out = std::isfinite(x) ? x : simGlobal(i, std::clamp(g_currentSize.load(), 0, kSizes - 1));
+    *out = std::isfinite(x) ? x : simGlobal(i, std::clamp(g_currentSize.load(), 0, kPresetRows - 1));
     return true;
 }
 void saveSoon();
@@ -446,10 +545,103 @@ bool simSet(const char* key, float f) {
     return true;
 }
 
+// What a preset holds: every breast size preset value, and these global ones (butt, effects, idle motion).
+const int kPresetGlobals[] = {kButt, kButtHz, kButtDamping, kButtMax, kButtUp, kButtSide, kButtFront, kButtGravity, kButtSize,
+                              kButtClothedStrength, kButtClothedHz, kButtClothedDamping, kButtClothedGravity, kBreastWall,
+                              kSwingOn, kSquishOn, kWeightOn, kIdleOn, kIdleAmp, kIdleSpeed, kIdleStiff, kIdleKick, kIdleSide,
+                              kIdleCircle, kEdgeFirm, kSoftStart, kIgnoreRoot, kStretch, kClothOn, kClothScale, kClothFabric, kClothSwim, kClothUnderwear, kClothLight, kClothTube, kClothNames, kClothDress, kClothHeavy, kClothOuter, kClothOther, kClothUnknown, kClothSwimBottom, kClothUnderwearBottom, kClothSkirt, kClothPants};
+bool setValue(const char* key, float f);
+std::atomic<int> g_presetUi{0};  // 1 = a menu asked for the Presets picker; the script takes it (preset_ui())
+// A preset's name as a file name: letters, digits, space, - _ ( ), 40 characters at most; empty = refused.
+bool presetFile(const char* name, std::string* file) {
+    std::string clean;
+    for (const char* c = name ? name : ""; *c && clean.size() < 40; ++c)
+        if (isalnum(static_cast<unsigned char>(*c)) || strchr(" -_()", *c)) clean += *c;
+    while (!clean.empty() && clean.back() == ' ') clean.pop_back();
+    while (!clean.empty() && clean.front() == ' ') clean.erase(0, 1);
+    if (clean.empty()) return false;
+    *file = "presets\\" + clean + ".ini";
+    return true;
+}
+void presetApply(const char* what, bool save, const char* file = "integratedbodyphysics_preset.ini") {
+    std::string path(g_folder.begin(), g_folder.end());
+    if (save && strchr(file, '\\')) CreateDirectoryW((g_folder + L"presets").c_str(), nullptr);
+    path += file;
+    int n = 0;
+    auto each = [&](Value& v) {
+        if (save) {
+            char text[32];
+            std::snprintf(text, sizeof text, "%g", v.v.load());
+            WritePrivateProfileStringA("jiggle", v.key, text, path.c_str());
+        } else {
+            std::wstring wide(path.begin(), path.end());
+            float x = v.fallback;
+            if (!readIni(wide, v.key, x)) return;
+            setValue(v.key, x);
+        }
+        ++n;
+    };
+    for (auto& size : g_preset)
+        for (Value& v : size) each(v);
+    for (int i : kPresetGlobals) each(g_values[i]);
+    LOG("Preset %s: %d values (%s)", what, n, file);
+}
+// Named presets (user 2026-10-28 20:47Z): any number, each saved under a name in presets\<name>.ini.
+// "Natural soft" ships there; a file lists only the settings it sets (the others stay as they are).
+std::string presetNames() {
+    std::vector<std::string> names;
+    WIN32_FIND_DATAW found;
+    if (HANDLE h = FindFirstFileW((g_folder + L"presets\\*.ini").c_str(), &found); h != INVALID_HANDLE_VALUE) {
+        do {
+            std::wstring n = found.cFileName;
+            if (n.size() > 4) names.push_back(std::string(n.begin(), n.end() - 4));
+        } while (FindNextFileW(h, &found));
+        FindClose(h);
+    }
+    std::sort(names.begin(), names.end(), [](const std::string& a, const std::string& b) { return _stricmp(a.c_str(), b.c_str()) < 0; });
+    std::string out;
+    for (const std::string& n : names) out += n + "\n";
+    return out;
+}
+// action "save" | "load" | "delete" | "exists"; 1 = done.
+int presetDo(const char* action, const char* name) {
+    std::string file;
+    if (!action || !presetFile(name, &file)) return 0;
+    std::string full(g_folder.begin(), g_folder.end());
+    full += file;
+    bool exists = GetFileAttributesA(full.c_str()) != INVALID_FILE_ATTRIBUTES;
+    if (!strcmp(action, "exists")) return exists;
+    if (!strcmp(action, "save")) presetApply("saved", true, file.c_str());
+    else if (!strcmp(action, "load") && exists) presetApply("loaded", false, file.c_str());
+    else if (!strcmp(action, "delete") && exists) DeleteFileA(full.c_str());
+    else return 0;
+    LOG("Preset %s: %s", action, file.c_str());
+    return 1;
+}
+void presetReset() {
+    for (auto& size : g_preset)
+        for (Value& v : size) setValue(v.key, v.fallback);
+    for (int i : kPresetGlobals) setValue(g_values[i].key, g_values[i].fallback);
+    LOG("Preset: the built-in defaults are back");
+}
+
 bool setValue(const char* key, float f) {
+    for (const char* action : {"save", "load", "delete"}) {  // "preset_save:<name>" ...: named presets, any frontend
+        std::string prefix = std::string("preset_") + action + ":";
+        if (key && !_strnicmp(key, prefix.c_str(), prefix.size())) return f != 0 && presetDo(action, key + prefix.size()) != 0;
+    }
     if (simSet(key, f)) return true;
     Value* v = findValue(key);
     if (!v || !std::isfinite(f)) return false;
+    if (v >= &g_values[kPresetSave] && v <= &g_values[kPresetUi]) {
+        if (f != 0) {
+            if (v == &g_values[kPresetSave]) presetApply("saved", true);
+            else if (v == &g_values[kPresetLoad]) presetApply("loaded", false);
+            else if (v == &g_values[kPresetUi]) g_presetUi = 1;
+            else presetReset();
+        }
+        return true;
+    }
     if (v >= &g_values[kScaleFromSmall] && v <= &g_values[kScaleFromHuge]) {
         if (f != 0) scaleFrom(int(v - &g_values[kScaleFromSmall]));
         return true;
@@ -580,6 +772,7 @@ std::atomic<uint32_t> g_simClothed[kMaxSims];  // 1: top covers the breasts, 2: 
 std::atomic<float> g_simGravity[kMaxSims];  // her own nude breast gravity (pie Gravity preset, -1..1); NaN = the setting
 std::atomic<float> g_simApart[kMaxSims];    // her own nude breasts apart (pie Spacing preset, metres); NaN = the setting
 std::atomic<int> g_simCup[kMaxSims];        // her pie Cup size (0 small .. 3 huge); -1 = from her CAS size
+std::atomic<bool> g_simEnhanced[kMaxSims];  // set enhanced (implants) in the pie
 std::atomic<int> g_simOwnSet[kMaxSims];     // her g_simSet entry (her own settings), -1 = none
 // The active Sim, and where it was the last time the game posed it (for the distance settings).
 std::atomic<void*> g_ownActor{nullptr};
@@ -598,6 +791,7 @@ struct SimLook {
     uint32_t clothed = 0;
     float gravity = NAN, apart = NAN;
     int cup = -1;
+    bool enhanced = false;  // pie choice
     int set = -1;  // her own settings (g_simSet), -1 = none
 };
 bool strengthOf(void* actor, SimLook& o) {
@@ -611,6 +805,7 @@ bool strengthOf(void* actor, SimLook& o) {
             o.gravity = g_simGravity[i].load(std::memory_order_relaxed);
             o.apart = g_simApart[i].load(std::memory_order_relaxed);
             o.cup = g_simCup[i].load(std::memory_order_relaxed);
+            o.enhanced = g_simEnhanced[i].load(std::memory_order_relaxed);
             o.set = g_simOwnSet[i].load(std::memory_order_relaxed);
             return o.breasts > 0 || o.butt > 0;
         }
@@ -778,8 +973,8 @@ Quat axisAngle(Vec3 axis, float angle) {
 // about the axis across its lever from the parent bone. Squish: flattened along
 // the press, wider across it, volume kept (scale in the bone's own axes).
 // move: the shown jiggle (world, no spacing); press: Sim frame.
-void shapeBone(Xf& local, Vec3 move, Vec3 press, float swing, float squish, const Quat& wq, Vec3 ws, const Quat& pq,
-               Vec3 lever) {
+void shapeBone(Xf& local, Vec3 move, Vec3 press, float swing, float squish, float stretch, const Quat& wq, Vec3 ws,
+               const Quat& pq, Vec3 lever) {
     Quat lq{local.q[0], local.q[1], local.q[2], local.q[3]};
     bool turned = false;
     float L = length(lever);
@@ -816,6 +1011,22 @@ void shapeBone(Xf& local, Vec3 move, Vec3 press, float swing, float squish, cons
         local.s[0] *= wide + (along - wide) * nb.x * nb.x;
         local.s[1] *= wide + (along - wide) * nb.y * nb.y;
         local.s[2] *= wide + (along - wide) * nb.z * nb.z;
+    }
+    // Stretch (squash and stretch, as in naelstrof's JigglePhysics): longer along the way it's moving, thinner
+    // across, volume kept. 5 cm of movement at stretch 1 = 25% longer.
+    float moved = length(move);
+    float t = std::min(0.25f, stretch * moved / 0.05f * 0.25f);
+    if (t > 0.005f && std::isfinite(t)) {
+        Vec3 o = rotate(conj(wq), move);
+        o = {o.x / ws.x, o.y / ws.y, o.z / ws.z};
+        float ol = length(o);
+        if (ol > 1e-6f) {
+            Vec3 nb = rotate(conj(qmul(pq, lq)), mul(o, 1 / ol));
+            float along = 1 + t, thin = 1 / std::sqrt(along);
+            local.s[0] *= thin + (along - thin) * nb.x * nb.x;
+            local.s[1] *= thin + (along - thin) * nb.y * nb.y;
+            local.s[2] *= thin + (along - thin) * nb.z * nb.z;
+        }
     }
 }
 
@@ -955,6 +1166,7 @@ void publishArms(uint8_t* actor, uint8_t* pose, int slotIndex) {
     }
     st.input.actor = actor;
     st.input.size = world.s[1] > 0.1f && world.s[1] < 5 ? world.s[1] : 1;
+    std::memcpy(st.input.root, world.p, sizeof(st.input.root));
     jig::phys::publish(slotIndex, st.input);
     slot.busy.clear(std::memory_order_release);
 }
@@ -1032,6 +1244,24 @@ int jiggle(uint8_t* actor, uint8_t* pose, SimLook look) {
             std::memcpy(&s.base, &locals[j], sizeof(Xf));
         s.written = false;
     }
+    // A Sim the Sims 4 VR mod has as a ragdoll (user 2026-10-29: breasts and cloth floated where the standing
+    // body was): the bones stay as the game and the ragdoll pose them, so they follow the falling body. The
+    // springs start afresh when it is over.
+    {
+        using ActiveFn = int (*)(void*);
+        static ActiveFn active = nullptr;
+        static ULONGLONG looked = 0;
+        if (!active && now - looked > 5000) {
+            looked = now;
+            if (HMODULE vr = GetModuleHandleW(L"sims4vr.dll"))
+                active = reinterpret_cast<ActiveFn>(GetProcAddress(vr, "s4vr_ragdoll_active"));
+        }
+        if (active && active(actor)) {
+            for (int b = 0; b < kBones; ++b) st.spring[b].started = false;
+            slot->busy.clear(std::memory_order_release);
+            return -1;
+        }
+    }
     // Her size preset: the pie's Cup size, else from her CAS breast bone's scale.
     if (st.bone[kLeftBreast] >= 0) {
         const float* sc = st.spring[kLeftBreast].base.s;
@@ -1047,9 +1277,6 @@ int jiggle(uint8_t* actor, uint8_t* pose, SimLook look) {
             }
         }
     }
-    const int z = look.cup >= 0 && look.cup < kSizes ? look.cup : sizeFrom(st.measured);
-    if (look.set >= 0 && look.set == g_current.load(std::memory_order_relaxed))
-        g_currentSize.store(z, std::memory_order_relaxed);
     // Her own settings (frozen Sim's "Configure current Sim") over the global ones.
     auto hasOwn = [&](int i) {
         return look.set >= 0 && std::isfinite(g_simSet[look.set].v[i].load(std::memory_order_relaxed));
@@ -1057,6 +1284,11 @@ int jiggle(uint8_t* actor, uint8_t* pose, SimLook look) {
     auto own = [&](int i, float global) {
         return hasOwn(i) ? g_simSet[look.set].v[i].load(std::memory_order_relaxed) : global;
     };
+    // Her size preset, natural or enhanced (her own debug-menu choice, else the pie's).
+    const bool enhanced = own(kSimEnhanced, look.enhanced ? 1.f : 0.f) != 0;
+    const int z = (look.cup >= 0 && look.cup < kSizes ? look.cup : sizeFrom(st.measured)) + (enhanced ? kSizes : 0);
+    if (look.set >= 0 && look.set == g_current.load(std::memory_order_relaxed))
+        g_currentSize.store(z, std::memory_order_relaxed);
     auto P = [&](int f) { return own(f, pv(z, f)); };
     auto B = [&](int key) {
         for (int i = 0; i < kSimButt; ++i)
@@ -1271,7 +1503,7 @@ int jiggle(uint8_t* actor, uint8_t* pose, SimLook look) {
         }
         Vec3 move = add(jig, spread);
         writeMove(locals, j, s, move, wq, ws, pq, parent);
-        if (breast) shapeBone(locals[j], jig, pressed, swing, squish, wq, ws, pq, lever);
+        if (breast) shapeBone(locals[j], jig, pressed, swing, squish, val(kStretch), wq, ws, pq, lever);
         std::memcpy(&s.wrote, &locals[j], sizeof(Xf));
         s.written = true;
 
@@ -1443,7 +1675,7 @@ void install() {
     readSettings();
     wchar_t exe[MAX_PATH] = L"";
     GetModuleFileNameW(nullptr, exe, MAX_PATH);
-    LOG("Integrated Body Physics 0.13.0 in %ls", exe);
+    LOG("Integrated Body Physics 0.13.15 in %ls", exe);
     if (rtbpLoaded()) {
         LOG("RTBP's d3d11.dll is loaded%s", val(kWithRtbp) != 0 ? " (with_rtbp = 1: running anyway)" : ": staying off (with_rtbp = 1 runs both)");
         if (val(kWithRtbp) == 0) return;
@@ -1598,6 +1830,7 @@ PyObject* setSims(PyObject*, PyObject* args) {
     void* actors[kMaxSims];
     float strength[kMaxSims], butt[kMaxSims], gravityOf[kMaxSims], apartOf[kMaxSims];
     int cupOf[kMaxSims], setOf[kMaxSims];
+    bool enhancedOf[kMaxSims];
     bool own[kMaxSims];
     uint32_t clothedOf[kMaxSims];
     for (int i = 0; i < n; ++i) {
@@ -1620,6 +1853,7 @@ PyObject* setSims(PyObject*, PyObject* args) {
         strength[found] = s;
         own[found] = (flags & 1) != 0;
         clothedOf[found] = (flags >> 1) & 3;
+        enhancedOf[found] = (flags & 8) != 0;  // pie: enhanced (implants)
         gravityOf[found] = g;  // NaN: the setting (0.11.14; was -1, and the pie used 0..1)
         apartOf[found] = ap;  // NaN: the setting
         cupOf[found] = cup >= 0 && cup < kSizes ? cup : -1;
@@ -1637,6 +1871,7 @@ PyObject* setSims(PyObject*, PyObject* args) {
         g_simGravity[i].store(gravityOf[i], std::memory_order_relaxed);
         g_simApart[i].store(apartOf[i], std::memory_order_relaxed);
         g_simCup[i].store(cupOf[i], std::memory_order_relaxed);
+        g_simEnhanced[i].store(enhancedOf[i], std::memory_order_relaxed);
         g_simOwnSet[i].store(setOf[i], std::memory_order_relaxed);
         g_simActor[i].store(actors[i], std::memory_order_relaxed);
     }
@@ -1745,6 +1980,15 @@ PyObject* keyName(PyObject*, PyObject* args) {
     return py.Py_BuildValue("s", text.c_str());
 }
 
+// presets() -> names, one per line; preset(action, name) -> 1 when done; preset_ui() -> 1 once per menu request.
+PyObject* presetList(PyObject*, PyObject*) { return py.Py_BuildValue("s", presetNames().c_str()); }
+PyObject* presetCall(PyObject*, PyObject* args) {
+    const char *action = nullptr, *name = nullptr;
+    if (!py.PyArg_ParseTuple(args, "ss", &action, &name)) return nullptr;
+    return py.PyLong_FromLong(presetDo(action, name));
+}
+PyObject* presetUi(PyObject*, PyObject*) { return py.PyLong_FromLong(g_presetUi.exchange(0)); }
+
 PyMethodDef methods[] = {
     {"set_sims", setSims, METH_VARARGS, "set_sims(bytes of (id u64, breasts f32, butt f32, flags u32)) -> Sims found"},
     {"set", setValue, METH_VARARGS, "set(name, value): on, breasts, butt"},
@@ -1757,6 +2001,9 @@ PyMethodDef methods[] = {
     {"menu_key", menuKey, METH_NOARGS, "menu_key() -> 1 once per press of the menu key (not with the VR mod)"},
     {"vr", vr, METH_NOARGS, "vr() -> 1 when the Sims 4 VR mod is loaded"},
     {"capture", capture, METH_VARARGS, "capture(1) starts waiting for a key; capture(0) -> the key pressed (0 = none)"},
+    {"presets", presetList, METH_NOARGS, "presets() -> the saved preset names, one per line"},
+    {"preset", presetCall, METH_VARARGS, "preset(action, name): save | load | delete | exists -> 1 when done"},
+    {"preset_ui", presetUi, METH_NOARGS, "preset_ui() -> 1 once per request from a menu to open the Presets picker"},
     {"key_name", keyName, METH_VARARGS, "key_name(code) -> the key's name"},
     {nullptr, nullptr, 0, nullptr},
 };
@@ -1818,6 +2065,13 @@ extern "C" __declspec(dllexport) int ibp_set(const char* key, float value) { ret
 // The settings menu as rows of text (src/menu.inc, docs/MENU-EXPORT.md); the values behind it go through
 // ibp_get / ibp_set.
 extern "C" __declspec(dllexport) const wchar_t* ibp_menu() { return kMenu; }
+// Saved preset names, one per line (UTF-8; valid until the next call). Save / load / delete go through
+// ibp_set("preset_save:<name>" | "preset_load:<name>" | "preset_delete:<name>", 1).
+extern "C" __declspec(dllexport) const char* ibp_presets() {
+    static std::string names;
+    names = presetNames();
+    return names.c_str();
+}
 
 extern "C" __declspec(dllexport) PyObject* PyInit__integratedbodyphysics() {
     if (!loadApi()) return nullptr;

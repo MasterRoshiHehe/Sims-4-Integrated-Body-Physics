@@ -403,6 +403,9 @@ def _build(base):
     for order, (name, ids) in enumerate(pose.POSES):
         out.append(_make(base, len(out), pprefix + name, posemenu, _pose_check(ids),
                          lambda sim, i=ids, n=name: pose.hold(sim, i, n), order))
+    for order, (name, clip_id) in enumerate(pose.CLIPS, len(pose.POSES)):
+        out.append(_make(base, len(out), pprefix + name, posemenu, _clip_check(name, clip_id),
+                         lambda sim, n=name: pose.hold_clip(sim, n), order))
     # Was "Let her go" in the Pose menu: now the freeze toggle in the top menu (user 2026-10-19 00:08Z); the
     # Pose menu only shows while she is frozen.
     out.append(_make(base, len(out),
@@ -437,7 +440,29 @@ def _build(base):
         for order, (name, value) in enumerate(levels):
             out.append(_make(base, len(out), '{}{} ({})'.format(rprefix, name, value), menu or config,
                              _rel_check(romance, value), lambda sim, r=romance, v=value: _set_rel(sim, r, v), order))
+    # Natural / enhanced breasts (user 2026-10-28): a toggle in the top menu.
+    out.append(_make(base, len(out),
+                     lambda sim: prefix + ('Breasts: set as natural' if _enhanced(sim) else 'Breasts: set as enhanced'),
+                     config, lambda sim: None, _toggle_enhanced, 7))
     return out
+
+
+def _enhanced(sim):
+    from integratedbodyphysics import store
+    return store.enhanced(sim.sim_info.sim_id)
+
+
+def _toggle_enhanced(sim):
+    from integratedbodyphysics import store, _mod
+    value = not _enhanced(sim)
+    store.set_enhanced(sim.sim_info.sim_id, value)
+    try:  # she is the frozen Sim: her debug-menu / phone switch follows (it wins over the pie)
+        from integratedbodyphysics import pose
+        if pose.holding(sim) and _mod is not None:
+            _mod.set('sim_enhanced', 1.0 if value else 0.0)
+    except Exception:
+        pass
+    _log('{}: breasts {}'.format(sim, 'enhanced' if value else 'natural'))
 
 
 def _freeze_check(sim):
@@ -455,7 +480,20 @@ def _pose_check(ids):
         aff = pose.affordance(ids)
         if aff is None:
             return 'not in this game', False
+        if pose.clip_name(sim) is not None:
+            return None
         return ('Holding it now', True) if pose.held_affordance(sim) is aff else None
+    return check
+
+
+def _clip_check(name, clip_id):
+    def check(sim):
+        from integratedbodyphysics import pose
+        if not pose.holding(sim):
+            return 'not frozen', False
+        if not pose.clip_available(clip_id):
+            return 'needs Fitness Stuff', False
+        return ('Holding it now', True) if pose.clip_name(sim) == name else None
     return check
 
 

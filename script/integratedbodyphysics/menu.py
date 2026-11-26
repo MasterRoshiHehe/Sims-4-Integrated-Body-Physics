@@ -230,8 +230,115 @@ def _ask_key(page, f):
     dialog.show_dialog(on_response=on_response)
 
 
+def _picker(title, text, entries, on_pick, on_back):
+    """A one-choice list of (label, description, value); on_pick(value) on OK, on_back() on cancel."""
+    from sims4.localization import LocalizationHelperTuning
+    from ui.ui_dialog_picker import ObjectPickerRow, UiObjectPicker
+    dialog = UiObjectPicker.TunableFactory().default(
+        _who(), text=_raw(text), title=_raw(title), min_selectable=1, max_selectable=1,
+        picker_type=UiObjectPicker.UiObjectPickerObjectPickerType.OBJECT)
+    for i, (label, description, value) in enumerate(entries):
+        text_ = LocalizationHelperTuning.get_raw_text(description) if description else None
+        dialog.add_row(ObjectPickerRow(
+            option_id=i, name=LocalizationHelperTuning.get_raw_text(label), row_description=text_,
+            row_tooltip=(lambda text_=text_: text_) if text_ else None, tag=value))
+
+    def on_response(d):
+        from ui.ui_dialog import ButtonType
+        try:
+            picked = d.get_result_tags() if d.response == ButtonType.DIALOG_RESPONSE_OK else []
+            if picked:
+                on_pick(picked[0])
+            else:
+                on_back()
+        except Exception as e:
+            _closed()
+            _log('picker {} failed: {!r}'.format(title, e))
+
+    dialog.show_dialog(on_response=on_response)
+
+
+def _sure(title, text, then, back):
+    from ui.ui_dialog import ButtonType, UiDialogOkCancel
+    dialog = UiDialogOkCancel.TunableFactory().default(_who(), title=_raw(title), text=_raw(text))
+
+    def on_response(d):
+        try:
+            if d.response == ButtonType.DIALOG_RESPONSE_OK:
+                then()
+            back()
+        except Exception as e:
+            _closed()
+            _log('sure {} failed: {!r}'.format(title, e))
+
+    dialog.show_dialog(on_response=on_response)
+
+
+def show_presets():
+    """The Presets list (user 2026-10-28 20:47Z): as many named presets as you like. Reached from the main page
+    row "Presets…" in the VR debug menu, the phone's Body Physics app and this menu (the DLL's preset_ui)."""
+    global _open
+    if _who() is None:
+        _closed()
+        return
+    _open = True
+    names = [n for n in _mod().presets().split('\n') if n]
+    entries = [('Save as a new preset…', 'Type a name; every setting in the presets is saved under it.', ('new', ''))]
+    entries += [(n, 'Pick to load it, overwrite it with your current settings, or delete it.', ('p', n)) for n in names]
+    _picker('Presets', 'Your saved presets ({}).'.format(len(names)) if names else 'No presets saved yet.', entries,
+            lambda v: _preset_new() if v[0] == 'new' else _preset_pick(v[1]), _closed)
+
+
+def _preset_new():
+    from ui.ui_dialog import ButtonType
+    from ui.ui_dialog_generic import UiDialogTextInputOkCancel
+    dialog = UiDialogTextInputOkCancel.TunableFactory(text_inputs=('name',)).default(
+        _who(), title=_raw('Save as a new preset'),
+        text=_raw('Name for the preset (letters, numbers, spaces, - _ ( ) ). Saving a name that exists overwrites it.'))
+
+    def on_response(d):
+        try:
+            if d.response != ButtonType.DIALOG_RESPONSE_OK:
+                show_presets()
+                return
+            name = d.text_input_responses.get('name', '').strip()
+            if not name:
+                show_presets()
+            elif _mod().preset('exists', name):
+                _preset_act('save', name)  # asks before overwriting
+            else:
+                ok = _mod().preset('save', name)
+                _log('preset save {!r}: {}'.format(name, 'done' if ok else 'refused'))
+                show_presets()
+        except Exception as e:
+            _closed()
+            _log('preset save failed: {!r}'.format(e))
+
+    dialog.show_dialog(on_response=on_response, text_input_overrides={'name': _raw('')})
+
+
+def _preset_pick(name):
+    _picker('Preset: {}'.format(name), 'What to do with it?', [
+        ('Load', 'Sets all those settings from it. Overwrites what you have now.', 'load'),
+        ('Overwrite with my current settings', 'Saves every setting as it is now under this name.', 'save'),
+        ('Delete', 'Removes the preset file.', 'delete')],
+        lambda act: _preset_act(act, name), show_presets)
+
+
+def _preset_act(act, name):
+    text = {'load': 'Load "{}"? This overwrites your current settings.', 'save': 'Overwrite "{}" with your current settings?',
+            'delete': 'Delete "{}"?'}[act].format(name)
+
+    def then():
+        ok = _mod().preset(act, name)
+        _log('preset {} {!r}: {}'.format(act, name, 'done' if ok else 'failed'))
+    _sure('Preset: {}'.format(name), text, then, show_presets)
+
+
 def _poll(_handle=None):
     try:
+        if _mod().preset_ui() and not _open:
+            show_presets()
         if _mod().menu_key() and not _open:
             show()
     except Exception as e:
